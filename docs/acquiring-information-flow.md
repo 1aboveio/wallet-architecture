@@ -4,7 +4,7 @@
 sequenceDiagram
     autonumber
     participant M as 商户<br>(Merchant)
-    participant PF as Glopay<br>(PF)
+    participant PF as 平台<br>(PF)
     participant Acq as 收单行<br>(Acquirer)
     participant CN as 卡组织<br>(Visa/MC)
     participant Iss as 发卡行<br>(Issuer)
@@ -47,7 +47,7 @@ sequenceDiagram
 
     Note over PF: 记账分录:<br>借: 应收收单行 +$100<br>贷: 应付商户待结算 +$100
 
-    box rgb(230,255,230) ③ SETTLE 收单行 → Glopay
+    box rgb(230,255,230) ③ SETTLE 收单行 → PF
     end
 
     Note over CN,Acq: T+1 / T+2 批量结算
@@ -60,7 +60,7 @@ sequenceDiagram
 
     Note over PF: 记账分录:<br>借: 银行账户 +$97.50<br>借: 卡组织费用 -$1.50<br>借: 收单行费用 -$1.00<br>贷: 应收收单行 -$100
 
-    box rgb(255,230,255) ④ SETTLE Glopay → 商户
+    box rgb(255,230,255) ④ SETTLE PF → 商户
     end
 
     Note over PF: 按结算周期批量处理<br>(如每日/每周)
@@ -68,7 +68,7 @@ sequenceDiagram
     PF->>M: 结算通知
     Note over M: 待结算 → 可用余额<br>$99.00 入钱包
 
-    Note over PF: 记账分录:<br>借: 应付商户待结算 -$100<br>贷: 商户钱包余额 +$99<br>贷: Glopay服务费收入 +$1
+    Note over PF: 记账分录:<br>借: 应付商户待结算 -$100<br>贷: 商户钱包余额 +$99<br>贷: 平台服务费收入 +$1
 ```
 
 ## 各阶段信息要素

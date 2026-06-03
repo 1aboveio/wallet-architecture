@@ -7,7 +7,7 @@ sequenceDiagram
     participant Iss as 发卡行<br>(Issuer)
     participant CN as 卡组织<br>(Visa/MC)
     participant Acq as 收单行<br>(Acquirer)
-    participant PF as Glopay<br>(PF)
+    participant PF as 平台<br>(PF)
     participant M as 商户<br>(Merchant)
 
     box rgb(230,245,255) ① AUTH 授权 — 无资金流动
@@ -29,7 +29,7 @@ sequenceDiagram
 
     Note over CN: $100 暂存卡组织<br>等待 T+1/T+2 清算
 
-    box rgb(230,255,230) ③ SETTLE 收单行→Glopay — 逐级扣费
+    box rgb(230,255,230) ③ SETTLE 收单行→PF — 逐级扣费
     end
 
     Note over CN,Acq: T+1 / T+2 净额结算
@@ -40,16 +40,16 @@ sequenceDiagram
 
     Acq->>PF: -$1.00 (收单行费用)
     Acq-)PF: +$97.50
-    Note over Acq,PF: 收单行 → Glopay 银行<br>$98.50 - $1.00 = $97.50
+    Note over Acq,PF: 收单行 → PF 银行<br>$98.50 - $1.00 = $97.50
 
-    Note over PF: Glopay 银行到账 $97.50
+    Note over PF: PF 银行到账 $97.50
 
-    box rgb(255,230,255) ④ SETTLE Glopay→商户 — 扣除平台费用
+    box rgb(255,230,255) ④ SETTLE PF→商户 — 扣除平台费用
     end
 
-    PF->>M: -$1.00 (Glopay 服务费)
+    PF->>M: -$1.00 (PF 服务费)
     PF-)M: +$99.00
-    Note over PF,M: Glopay 银行 → 商户钱包<br>$100 - $1.00 = $99.00
+    Note over PF,M: PF 银行 → 商户钱包<br>$100 - $1.00 = $99.00
 
     Note over M: 商户可用余额 +$99.00<br>可提现 / 换汇 / 付款
 ```
@@ -61,7 +61,7 @@ sequenceDiagram
                                       ────────
 卡组织网络费 (Visa/MC):                  -$1.50
 收单行手续费 (Acquirer):                 -$1.00
-Glopay 服务费 (PF):                      -$1.00
+PF 服务费:                                -$1.00
                                       ────────
 商户实收:                                $96.50
 
@@ -71,7 +71,7 @@ Glopay 服务费 (PF):                      -$1.00
 ## 资金在各节点的停留时间
 
 ```
-买家刷卡 ──→ 发卡行扣款 ──→ 卡组织暂存 ──→ 收单行 ──→ Glopay银行 ──→ 商户钱包
+买家刷卡 ──→ 发卡行扣款 ──→ 卡组织暂存 ──→ 收单行 ──→ PF银行 ──→ 商户钱包
    │             │              │             │            │              │
    │         实时(秒级)      T+1~T+2       T+1~T+2      T+0~T+1        按周期
    │                          批量清算       到账通知     银行入账       (日/周)
