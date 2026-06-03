@@ -11,6 +11,7 @@
 | [账户体系与余额设计](docs/account-balance-design.md) | 账户命名规则、余额结构、乐观锁并发控制、定期对账 |
 | [账户设计双视角](docs/chart-of-accounts-dual.md) | 财务视角（Receivable）与支付行业视角（Clearing）两套方案对照 |
 | [复式记账分录参考](docs/double-entry-bookkeeping.md) | 收款、换汇、提现、收单、冻结、保证金释放等九大场景完整分录 |
+| [流水账设计](docs/transaction-log-design.md) | 流水账与账本的关系、六类流水表结构、查询场景对照 |
 
 ### 收单业务（Acquiring）
 
