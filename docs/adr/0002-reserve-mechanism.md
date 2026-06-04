@@ -12,26 +12,26 @@
 ## 账户结构
 
 ```
-customer:{id}:reserve:fixed:{ccy}     ← 固定保证金
-customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
+customer:{id}:reserve:fixed:{ccy}       ← 固定保证金
+customer:{id}:reserve:rolling:{ccy}     ← 滚动保证金
+customer:{id}:special_account:{ccy}     ← 充值专户（用于固定保证金充值）
 ```
+
+---
 
 ## 固定保证金（Fixed Reserve）
 
 按交易金额百分比扣除，累计到目标金额后停止扣除。释放需手动触发。
 
-### 累计方式（三种，可混合）
+### 操作与资金路径
 
-**方式 1：从 available 余额一次性扣除**
+| 操作 | 资金路径 | 触发方式 |
+|------|----------|----------|
+| 累计（结算扣除） | `pending → fixed_reserve` | 每笔结算自动 |
+| 累计（充值） | `special_account → fixed_reserve` | 商户主动充值 |
+| 释放 | `fixed_reserve → available_balance` | 手动触发 |
 
-```
-目标: $500, available = $1000
-
-  借  customer:abc:available:USD        -$500.00
-  贷  customer:abc:reserve:fixed:USD    +$500.00
-```
-
-**方式 2：从每笔结算中按百分比扣除**
+### 累计方式 1：从结算中扣除
 
 ```
 目标: $500, 已累计: $400, 比率: 5%
@@ -45,19 +45,15 @@ customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
   贷  customer:abc:available:USD        +$940.00
   贷  customer:abc:reserve:fixed:USD    +$50.00
   贷  revenue:fee:acquiring             +$10.00
-
-  累计: $400 + $50 = $450，差额: $50
 ```
 
-**方式 3：商户直接充值/打款**
+### 累计方式 2：从充值专户转入
 
 ```
 目标: $500, 已累计: $200
 
-  借  house:bank:USD                    +$300.00
+  借  customer:abc:special_account:USD  -$300.00
   贷  customer:abc:reserve:fixed:USD    +$300.00
-
-  累计: $200 + $300 = $500（已满）
 ```
 
 ### 扣除公式
@@ -91,7 +87,15 @@ customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
 
 按交易金额百分比扣除，N 天后自动释放。无目标金额上限。
 
-### 扣除
+### 操作与资金路径
+
+| 操作 | 资金路径 | 触发方式 |
+|------|----------|----------|
+| 累计 | `pending → rolling_reserve` | 每笔结算自动 |
+| 释放 | `rolling_reserve → available_balance` | N 天后定时任务自动 |
+| 结转 | `rolling_reserve → fixed_reserve` | 手动触发（升级） |
+
+### 累计
 
 ```
 比率: 5%, 释放窗口: 90 天
@@ -120,6 +124,20 @@ customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
     UPDATE status = 'RELEASED'
 ```
 
+### 结转（升级为固定保证金）
+
+商户风险等级下降时，可将滚动保证金余额转入固定保证金：
+
+```
+滚动余额: $200
+固定目标: $500, 已累计: $250
+
+  借  customer:abc:reserve:rolling:USD  -$200.00
+  贷  customer:abc:reserve:fixed:USD    +$200.00
+
+  固定保证金: $250 + $200 = $450（未满，继续从结算扣除）
+```
+
 ### 退款
 
 已结算交易退款时，按退款比例退回滚动保证金：
@@ -136,18 +154,36 @@ customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
 
 ---
 
-## 滚动转固定（升级）
-
-商户风险等级下降时，可将滚动保证金余额转入固定保证金：
+## 资金路径汇总
 
 ```
-滚动余额: $200
-固定目标: $500, 已累计: $250
+                    ┌─────────────────────────────────────────┐
+                    │            固定保证金                    │
+                    │                                         │
+  ┌─────────┐      │      ┌──────────────────┐              │
+  │ pending  │──────┼─────▶│  reserve:fixed   │              │
+  └─────────┘      │      └────────┬─────────┘              │
+                    │               │                        │
+  ┌─────────┐      │               │ 释放                   │
+  │ special  │──────┼─────▶        ▼                        │
+  │ account  │      │      ┌──────────────────┐              │
+  └─────────┘      │      │  available       │              │
+                    │      └──────────────────┘              │
+                    └─────────────────────────────────────────┘
 
-  借  customer:abc:reserve:rolling:USD  -$200.00
-  贷  customer:abc:reserve:fixed:USD    +$200.00
-
-  固定保证金: $250 + $200 = $450（未满，继续从结算扣除）
+                    ┌─────────────────────────────────────────┐
+                    │            滚动保证金                    │
+                    │                                         │
+  ┌─────────┐      │      ┌──────────────────┐              │
+  │ pending  │──────┼─────▶│  reserve:rolling │              │
+  └─────────┘      │      └───┬─────────┬────┘              │
+                    │          │         │                   │
+                    │          │ 释放    │ 结转              │
+                    │          ▼         ▼                   │
+                    │      ┌────────┐ ┌──────────────┐       │
+                    │      │available│ │ reserve:fixed │       │
+                    │      └────────┘ └──────────────┘       │
+                    └─────────────────────────────────────────┘
 ```
 
 ---
@@ -162,21 +198,10 @@ customer:{id}:reserve:rolling:{ccy}   ← 滚动保证金
 | **停止扣除** | 达到目标后停止 | 永不停止 |
 | **释放** | 手动触发 | N 天后自动释放 |
 | **退款退回** | ❌ 不退回 | ✅ 按比例退回 |
-| **累计方式** | 余额扣除 / 结算扣除 / 充值 | 仅结算扣除 |
+| **累计路径** | pending→fixed, special→fixed | pending→rolling |
+| **释放路径** | fixed→available | rolling→available |
+| **结转路径** | — | rolling→fixed |
 | **账户** | `reserve:fixed:{ccy}` | `reserve:rolling:{ccy}` |
-
-## 保证金选择规则
-
-```
-IF 商户风险等级 == HIGH OR 历史拒付率 > 阈值
-  → 滚动保证金（比率 10%, 窗口 180 天）
-
-ELSE IF 商户是新商户（开户 < 90 天）
-  → 固定保证金（目标 $500, 比率 5%）
-
-ELSE
-  → 固定保证金（目标 $300, 比率 3%）
-```
 
 ## 保证金选择规则
 
