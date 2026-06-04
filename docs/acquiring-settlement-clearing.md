@@ -45,9 +45,9 @@ T+7   PF 结算给商户（下游）
 |------|------|------|
 | 资产 | `house:bank:USD` | PF 银行账户 |
 | 资产 | `receivable:txn:USD` | 应收交易款 |
-| 负债 | `payable:merchant:pending:USD` | 应付商户-待结算 |
-| 负债 | `payable:merchant:reserve:USD` | 应付商户-保证金 |
-| 负债 | `customer:abc:wallet:USD` | 商户钱包余额 |
+| 负债 | `customer:{id}:pending:{ccy}` | 商户待结算余额 |
+| 负债 | `customer:{id}:available:{ccy}` | 商户可用余额 |
+| 负债 | `customer:{id}:reserve:{ccy}` | 商户保证金 |
 | 收入 | `revenue:fee:acquiring` | 收单服务费收入 |
 | 费用 | `expense:refund` | 退款支出 |
 
@@ -80,8 +80,8 @@ sequenceDiagram
 ```
 ── T+0 Capture 请款 ──────────────────────────────────
 
-  借  receivable:txn:USD              +$100.00
-  贷  payable:merchant:pending:USD    +$100.00
+  借  receivable:txn:USD                  +$100.00
+  贷  customer:abc:pending:USD            +$100.00
 
   余额:
     receivable:txn      = $100
@@ -90,10 +90,10 @@ sequenceDiagram
 
 ── T+7 结算给商户 ─────────────────────────────────────
 
-  借  payable:merchant:pending:USD    -$100.00
-  贷  customer:abc:wallet:USD         +$94.00    ← 商户可用余额
-  贷  payable:merchant:reserve:USD    +$5.00     ← 保证金
-  贷  revenue:fee:acquiring           +$1.00     ← 服务费
+  借  customer:abc:pending:USD            -$100.00
+  贷  customer:abc:available:USD          +$94.00    ← 商户可用余额
+  贷  customer:abc:reserve:USD            +$5.00     ← 保证金
+  贷  revenue:fee:acquiring               +$1.00     ← 服务费
 
   余额:
     pending             = $0
@@ -135,13 +135,13 @@ sequenceDiagram
 ```
 ── T+0 Capture 请款 ──────────────────────────────────
 
-  借  receivable:txn:USD              +$100.00
-  贷  payable:merchant:pending:USD    +$100.00
+  借  receivable:txn:USD                  +$100.00
+  贷  customer:abc:pending:USD            +$100.00
 
 ── T+3 发生退款 $30 ──────────────────────────────────
 
-  借  payable:merchant:pending:USD    -$30.00
-  贷  receivable:txn:USD              -$30.00
+  借  customer:abc:pending:USD            -$30.00
+  贷  receivable:txn:USD                  -$30.00
 
   余额:
     receivable:txn      = $70     ($100 - $30)
@@ -149,10 +149,10 @@ sequenceDiagram
 
 ── T+7 结算给商户 ─────────────────────────────────────
 
-  借  payable:merchant:pending:USD    -$70.00
-  贷  customer:abc:wallet:USD         +$65.50    ← 商户可用余额
-  贷  payable:merchant:reserve:USD    +$3.50     ← 保证金 = $70 × 5%
-  贷  revenue:fee:acquiring           +$1.00     ← 服务费 = $100 × 1%
+  借  customer:abc:pending:USD            -$70.00
+  贷  customer:abc:available:USD          +$65.50    ← 商户可用余额
+  贷  customer:abc:reserve:USD            +$3.50     ← 保证金 = $70 × 5%
+  贷  revenue:fee:acquiring               +$1.00     ← 服务费 = $100 × 1%
 
   余额:
     pending             = $0
@@ -191,13 +191,13 @@ sequenceDiagram
 ```
 ── T+0 Capture 请款 ──────────────────────────────────
 
-  借  receivable:txn:USD              +$100.00
-  贷  payable:merchant:pending:USD    +$100.00
+  借  receivable:txn:USD                  +$100.00
+  贷  customer:abc:pending:USD            +$100.00
 
 ── T+4 发生全额退款 $100 ─────────────────────────────
 
-  借  payable:merchant:pending:USD    -$100.00
-  贷  receivable:txn:USD              -$100.00
+  借  customer:abc:pending:USD            -$100.00
+  贷  receivable:txn:USD                  -$100.00
 
   余额:
     receivable:txn      = $0

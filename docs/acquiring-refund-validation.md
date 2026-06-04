@@ -4,11 +4,37 @@
 
 退款校验的核心目标：**防止资损**。确保每一笔退款都有对应的资金来源，不会出现平台垫款或商户超额退款的情况。
 
-## 三条核心决策
+## 核心决策
 
-1. **退款直接扣 pending** — 退款发生时实时扣减待结算余额，商户即时可见
-2. **保证金 90 天后全额释放** — 从 T+7 结算日起算，90 天后释放到 available
-3. **负余额从后续收入抵扣** — 商户 available 为负时，新收入先抵扣负余额再入账
+见 [ADR 0001 退款逻辑设计](adr/0001-refund-logic.md)。
+
+1. **退款可用资金不包含保证金** — reserve 仅用于覆盖争议/拒付，不参与退款
+2. **已结算退款时保证金同步退回** — 退款与保证金退还在同一事务内完成
+3. **允许退款产生负余额** — available 不足时不拒绝退款，后续收入自动抵扣
+
+## 退款记账规则
+
+```
+退款来源 = 原交易状态决定
+
+Case 1: 原交易待结算（T+0 ~ T+7）
+  来源: pending
+  校验: 退款金额 ≤ 原交易金额 - 已退款累计
+
+  借  customer:{id}:pending:{ccy}    -退款金额
+  贷  receivable:txn:{ccy}           -退款金额
+
+Case 2: 原交易已结算（T+7 之后）
+  来源: available（允许负余额）
+  校验: 退款金额 ≤ 原交易金额 - 已退款累计
+
+  借  customer:{id}:available:{ccy}  -退款金额
+  贷  receivable:txn:{ccy}           -退款金额
+
+  同时退回保证金:
+  借  customer:{id}:reserve:{ccy}    -退回金额
+  贷  customer:{id}:available:{ccy}  +退回金额
+```
 
 ## 退款校验规则
 
@@ -52,15 +78,14 @@ REFUND_WINDOW 建议:
 ### 规则 4：商户资金兜底校验
 
 ```
-商户总资金 = available_balance
-          + pending_balance
-          + reserve_balance
+商户可退款资金 = available_balance
+              + pending_balance
 
-IF requested_refund > 商户总资金
+IF requested_refund > 商户可退款资金
   → REJECT "INSUFFICIENT_MERCHANT_FUNDS"
 ```
 
-**注意：** available 可能为负（历史负余额未抵扣完）。负的 available 会减少总资金，天然限制新退款。
+**注意：** reserve_balance 不参与退款可用资金计算（见 ADR 0001）。available 可能为负（历史负余额未抵扣完），负的 available 会减少可退款资金。
 
 ### 规则 5：幂等校验
 
@@ -78,22 +103,8 @@ IF refund_id 已存在于退款记录
 | 1 | 金额校验 | 退款 ≤ 原交易金额 - 已退款累计 | REFUND_EXCEEDS_AVAILABLE |
 | 2 | 状态校验 | 交易状态为 CAPTURED 或 SETTLED | INVALID_TRANSACTION_STATUS |
 | 3 | 窗口校验 | 在退款窗口期内 | REFUND_WINDOW_EXPIRED |
-| 4 | 资金校验 | 退款 ≤ 商户总资金 | INSUFFICIENT_MERCHANT_FUNDS |
+| 4 | 资金校验 | 退款 ≤ 商户可退款资金（available + pending，不含 reserve） | INSUFFICIENT_MERCHANT_FUNDS |
 | 5 | 幂等校验 | refund_id 唯一 | 返回已有结果 |
-
-## 校验通过后的执行逻辑
-
-```
-1. 扣减 pending
-   借  payable:merchant:pending:USD    -$30
-   贷  receivable:txn:USD              -$30
-
-2. 重新计算保证金（T+7 结算时生效）
-   保证金 = (原交易金额 - 退款后累计退款) × 5%
-
-3. 记录退款明细
-   refund_id / transaction_id / amount / status / created_at
-```
 
 ## 三道防线
 
@@ -117,8 +128,9 @@ IF refund_id 已存在于退款记录
 
 ```
 T+0    商户提现 $94 → available = $0
-T+3    交易 A 全额退款 $100
-         规则 4 校验: 总资金 = $0 + $100(pending) + $0(reserve) = $100 ≥ $100 ✅
+T+3    交易 A 全额退款 $100（原交易待结算）
+         退款来源: pending
+         pending = $100 ≥ $100 ✅
          扣减 pending → pending = $0
 
 T+7    交易 A 结算: pending = $0，无结算金额
@@ -127,19 +139,27 @@ T+7    交易 A 结算: pending = $0，无结算金额
 T+10   交易 B 结算 $94 → 无负余额 → available = $94
 ```
 
-### 场景：负余额抵扣
+### 场景：已结算交易退款产生负余额
 
 ```
-假设 available = -$6（历史原因）
+原交易 $100，已结算（T+7），保证金 $5
+商户在 T+8 提现 $94 → available = $0
+T+10 发起退款 $30
 
-新交易结算 $94 进入:
-  抵扣负余额: -$6 → 归零
-  剩余入账:   $94 - $6 = $88
-  available = $88
+退款来源: available（已结算）
+  借  customer:abc:available:USD   -$30.00
+  贷  receivable:txn:USD           +$30.00
 
-保证金释放 $5 进入:
-  无负余额 → 全额入账
-  available = $88 + $5 = $93
+  借  customer:abc:reserve:USD     -$1.50
+  贷  customer:abc:available:USD   +$1.50
+
+结果:
+  available = $0 - $30 + $1.50 = -$28.50
+  reserve   = $5 - $1.50 = $3.50
+
+后续抵扣:
+  新交易结算 $94 → 先冲负余额 -$28.50 → 实际入账 $65.50
+  保证金释放 $3.50 → 无负余额 → 全额入账
 ```
 
 ### 场景：资金不足拒绝退款
@@ -147,9 +167,14 @@ T+10   交易 B 结算 $94 → 无负余额 → available = $94
 ```
 商户状态: available = -$6, pending = $100, reserve = $0
 
-申请退款 $100:
-  规则 4: 总资金 = -$6 + $100 + $0 = $94 < $100 ❌
-  → REJECT "INSUFFICIENT_MERCHANT_FUNDS"
+申请退款（原交易待结算）$100:
+  退款来源: pending
+  pending = $100 ≥ $100 ✅ → 允许
+
+申请退款（原交易已结算）$100:
+  退款来源: available（允许负余额）
+  不拒绝 → available = -$6 - $100 = -$106
+  后续收入自动抵扣
 ```
 
 ## 保证金释放规则
