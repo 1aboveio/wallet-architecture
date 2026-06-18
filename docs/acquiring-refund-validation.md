@@ -17,14 +17,7 @@
 ```
 退款来源 = 原交易状态决定
 
-Case 1: 原交易待结算（T+0 ~ T+7）
-  来源: pending
-  校验: 退款金额 ≤ 原交易金额 - 已退款累计
-
-  借  customer:{id}:pending:{ccy}    -退款金额
-  贷  receivable:txn:{ccy}           -退款金额
-
-Case 2: 原交易已结算（T+7 之后）
+Case 1: 原交易已结算（SETTLED）
   来源: available（允许负余额）
   校验: 退款金额 ≤ 原交易金额 - 已退款累计
 
@@ -57,12 +50,14 @@ IF requested_refund > 退款可执行金额
 ### 规则 2：交易状态校验
 
 ```
-允许状态: CAPTURED / SETTLED
-拒绝状态: VOIDED / REFUNDED_FULL / DISPUTED / PENDING
+允许状态: SETTLED
+拒绝状态: CAPTURED / VOIDED / REFUNDED_FULL / DISPUTED / PENDING
 
-IF transaction.status NOT IN (CAPTURED, SETTLED)
+IF transaction.status != SETTLED
   → REJECT "INVALID_TRANSACTION_STATUS"
 ```
+
+**注：** settlement 前的撤销走 VOIDED，不走退款流程。详见 [ADR 0003 交易状态模型](adr/0003-transaction-status-model.md)。
 
 ### 规则 3：退款窗口校验
 
@@ -101,7 +96,7 @@ IF refund_id 已存在于退款记录
 | # | 规则 | 校验内容 | 失败返回码 |
 |---|------|----------|-----------|
 | 1 | 金额校验 | 退款 ≤ 原交易金额 - 已退款累计 | REFUND_EXCEEDS_AVAILABLE |
-| 2 | 状态校验 | 交易状态为 CAPTURED 或 SETTLED | INVALID_TRANSACTION_STATUS |
+| 2 | 状态校验 | 交易状态为 SETTLED | INVALID_TRANSACTION_STATUS |
 | 3 | 窗口校验 | 在退款窗口期内 | REFUND_WINDOW_EXPIRED |
 | 4 | 资金校验 | 退款 ≤ 商户可退款资金（available + pending，不含 reserve） | INSUFFICIENT_MERCHANT_FUNDS |
 | 5 | 幂等校验 | refund_id 唯一 | 返回已有结果 |
@@ -128,15 +123,16 @@ IF refund_id 已存在于退款记录
 
 ```
 T+0    商户提现 $94 → available = $0
-T+3    交易 A 全额退款 $100（原交易待结算）
-         退款来源: pending
-         pending = $100 ≥ $100 ✅
-         扣减 pending → pending = $0
+T+7    交易 A 结算 $100 → available = $100
+         商户再次提现 $100 → available = $0
+T+10   交易 A 全额退款 $100（已结算）
+         退款来源: available（允许负余额）
+         available = $0 - $100 = -$100
 
-T+7    交易 A 结算: pending = $0，无结算金额
-       商户状态: available = $0, pending = $0, reserve = $0
-
-T+10   交易 B 结算 $94 → 无负余额 → available = $94
+T+17   交易 B 结算 $94 → 先冲负余额 -$100 → 实际入账 -$6
+         available = -$100 + $94 = -$6
+T+24   交易 C 结算 $200 → 先冲负余额 -$6 → 实际入账 $194
+         available = -$6 + $200 = $194
 ```
 
 ### 场景：已结算交易退款产生负余额
@@ -162,19 +158,18 @@ T+10 发起退款 $30
   保证金释放 $3.50 → 无负余额 → 全额入账
 ```
 
-### 场景：资金不足拒绝退款
+### 场景：资金不足但允许退款（负余额）
 
 ```
-商户状态: available = -$6, pending = $100, reserve = $0
-
-申请退款（原交易待结算）$100:
-  退款来源: pending
-  pending = $100 ≥ $100 ✅ → 允许
+商户状态: available = -$6, reserve = $0
 
 申请退款（原交易已结算）$100:
   退款来源: available（允许负余额）
   不拒绝 → available = -$6 - $100 = -$106
   后续收入自动抵扣
+
+说明: 退款只能在 SETTLED 之后发起，不存在从 pending 退款的场景。
+      settlement 前的撤销走 VOIDED 流程，不涉及商户资金。
 ```
 
 ## 保证金释放规则

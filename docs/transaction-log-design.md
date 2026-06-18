@@ -47,7 +47,7 @@ CREATE TABLE transactions (
     buyer_info      JSONB,                           -- 买家信息（脱敏）
     amount          DECIMAL(18,4) NOT NULL,          -- 交易金额
     currency        VARCHAR(3) NOT NULL,             -- 币种
-    status          VARCHAR(32) NOT NULL,            -- AUTHORIZED / CAPTURED / SETTLED / REFUNDED
+    status          VARCHAR(32) NOT NULL,            -- INIT / PAYING / PAID / CAPTURED / SETTLED / CANCELED / VOIDED / REFUNDED / REFUNDED_FULL
     payment_method  VARCHAR(32),                     -- CARD / BANK_TRANSFER
     platform        VARCHAR(64),                     -- 来源平台
     metadata        JSONB,                           -- 扩展信息

@@ -41,18 +41,9 @@
 
 退款来源由**原交易状态**和**原交易适用的保证金类型**共同决定。
 
-### Case 1：原交易待结算
+**注：** 退款只能在 SETTLED 之后发起（见 ADR 0003），settlement 前的撤销走 VOIDED 流程。
 
-```
-来源: pending
-校验: 退款金额 ≤ 原交易金额 - 已退款累计
-保证金: 无（尚未结算，保证金未冻结）
-
-  借  customer:{id}:pending:{ccy}    -退款金额
-  贷  receivable:txn:{ccy}           -退款金额
-```
-
-### Case 2：原交易已结算 + 滚动保证金（状态 HELD）
+### Case 1：原交易已结算 + 滚动保证金（状态 HELD）
 
 ```
 来源: available（允许负余额）
@@ -83,7 +74,7 @@
   净效果: available -$28.50, rolling_reserve -$1.50
 ```
 
-### Case 2b：原交易已结算 + 滚动保证金（状态 RELEASED 或 RESERVE_RELEASED）
+### Case 2：原交易已结算 + 滚动保证金（状态 RELEASED 或 RESERVE_RELEASED）
 
 ```
 来源: available（允许负余额）
@@ -134,10 +125,11 @@
 
 | Case | 原交易状态 | 保证金类型 | 保证金状态 | 退款来源 | 保证金退回 | 允许负余额 |
 |------|-----------|-----------|-----------|---------|-----------|------------|
-| 1 | 待结算 | — | — | pending | 无 | N/A |
-| 2 | 已结算 | 滚动 | HELD | available | ✅ 按比例 | ✅ |
-| 2b | 已结算 | 滚动 | RELEASED / RESERVE_RELEASED | available | ❌ 不退回 | ✅ |
+| 1 | 已结算 | 滚动 | HELD | available | ✅ 按比例 | ✅ |
+| 2 | 已结算 | 滚动 | RELEASED / RESERVE_RELEASED | available | ❌ 不退回 | ✅ |
 | 3 | 已结算 | 固定 | — | available | ❌ 不退回 | ✅ |
+
+**注：** 退款只能在 SETTLED 之后发起（见 ADR 0003），settlement 前的撤销走 VOIDED 流程。
 
 ## 退款校验规则
 
@@ -146,16 +138,16 @@
   退款金额 ≤ 原交易金额 - 已退款累计
 
 规则 2: 状态校验
-  交易状态为 CAPTURED 或 SETTLED
+  交易状态为 SETTLED（详见 ADR 0003）
 
 规则 3: 窗口校验
   在退款窗口期内（卡支付 180 天）
 
-规则 4: 资金校验（仅 Case 1）
-  退款金额 ≤ pending_balance
+规则 4: 资金校验
+  允许 available 为负（不拒绝，后续收入自动抵扣）
 
 规则 5: 幂等校验
   refund_id 唯一
 ```
 
-**Case 2 和 Case 3 不拒绝 available 不足（允许负余额）。**
+**说明：** 所有 Case 允许 available 为负余额，不拒绝退款。
