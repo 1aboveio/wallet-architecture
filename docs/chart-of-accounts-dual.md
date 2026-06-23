@@ -18,7 +18,8 @@
 | `customer:{id}:available:{ccy}` | Liability | 客户可用余额 |
 | `customer:{id}:pending:{ccy}` | Liability | 客户待结算余额 |
 | `customer:{id}:frozen_hold:{ccy}` | Liability | 客户冻结预留 |
-| `customer:{id}:reserve:{ccy}` | Liability | 客户保证金 |
+| `customer:{id}:reserve:fixed:{ccy}` | Liability | 客户固定保证金 |
+| `customer:{id}:reserve:rolling:{ccy}` | Liability | 客户滚动保证金 |
 | `house:bank:{ccy}` | Asset | 平台银行账户 |
 | `receivable:txn:{ccy}` | Asset | 应收交易款（收单行欠平台） |
 | `receivable:collection:{ccy}` | Asset | 应收收款款（平台欠客户，待入账） |
@@ -49,7 +50,8 @@
 | `customer:{id}:available:{ccy}` | Liability | 客户可用余额 |
 | `customer:{id}:pending:{ccy}` | Liability | 客户待结算余额 |
 | `customer:{id}:frozen_hold:{ccy}` | Liability | 客户冻结预留 |
-| `customer:{id}:reserve:{ccy}` | Liability | 客户保证金 |
+| `customer:{id}:reserve:fixed:{ccy}` | Liability | 客户固定保证金 |
+| `customer:{id}:reserve:rolling:{ccy}` | Liability | 客户滚动保证金 |
 | `house:bank:{ccy}` | Asset | 平台银行账户 |
 | `clearing:acquiring:{ccy}` | Clearing | 收单过渡（钱在路上） |
 | `clearing:collection:{ccy}` | Clearing | 收款过渡（银行已收未入钱包） |
@@ -106,7 +108,8 @@
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
-  贷  customer:abc:reserve:USD            +$5.00
+  贷  customer:abc:reserve:fixed:USD      +$3.00
+  贷  customer:abc:reserve:rolling:USD    +$2.00
   贷  revenue:fee:acquiring               +$1.00
 ```
 
@@ -129,7 +132,8 @@
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
-  贷  customer:abc:reserve:USD            +$5.00
+  贷  customer:abc:reserve:fixed:USD      +$3.00
+  贷  customer:abc:reserve:rolling:USD    +$2.00
   贷  revenue:fee:acquiring               +$1.00
 ```
 

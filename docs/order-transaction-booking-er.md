@@ -72,7 +72,7 @@
 │   ┌──────────────────────────────────────────────────────────────────────────┐  │
 │   │  transaction_id: TXN-001                                                 │  │
 │   │  order_id: ORD-001                                                       │  │
-│   │  channel_status: AUTHORIZED / CAPTURED / SETTLED / REFUNDED / ...        │  │
+│   │  channel_status: PAID / CAPTURED / SETTLED / REFUNDED / ...        │  │
 │   │  attempt: 1                                                              │  │
 │   │  amount: $100                                                            │  │
 │   │  payment_method: CARD                                                    │  │
@@ -207,7 +207,7 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
    Order: ORD-001 (type=SALE, $100, status=CREATED)
 
 2. 支付授权成功
-   Transaction: TXN-001 (channel_status=AUTHORIZED)
+   Transaction: TXN-001 (channel_status=PAID)
    Order: ORD-001 → CONFIRMED
 
 3. Capture 成功，触发实时 Clearing

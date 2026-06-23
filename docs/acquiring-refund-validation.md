@@ -24,9 +24,9 @@ Case 1: 原交易已结算（SETTLED）
   借  customer:{id}:available:{ccy}  -退款金额
   贷  receivable:txn:{ccy}           -退款金额
 
-  同时退回保证金:
-  借  customer:{id}:reserve:{ccy}    -退回金额
-  贷  customer:{id}:available:{ccy}  +退回金额
+  同时退回滚动保证金（仅 HELD 状态）:
+  借  customer:{id}:reserve:rolling:{ccy}  -退回金额
+  贷  customer:{id}:available:{ccy}       +退回金额
 ```
 
 ## 退款校验规则
@@ -146,12 +146,12 @@ T+10 发起退款 $30
   借  customer:abc:available:USD   -$30.00
   贷  receivable:txn:USD           +$30.00
 
-  借  customer:abc:reserve:USD     -$1.50
-  贷  customer:abc:available:USD   +$1.50
+  借  customer:abc:reserve:rolling:USD  -$1.50
+  贷  customer:abc:available:USD        +$1.50
 
 结果:
   available = $0 - $30 + $1.50 = -$28.50
-  reserve   = $5 - $1.50 = $3.50
+  reserve:rolling = $5 - $1.50 = $3.50
 
 后续抵扣:
   新交易结算 $94 → 先冲负余额 -$28.50 → 实际入账 $65.50

@@ -20,7 +20,8 @@
 | `customer:{id}:available:{ccy}` | 可用余额，可提现、换汇、付款 |
 | `customer:{id}:pending:{ccy}` | 待结算余额，T+7 后进入 available |
 | `customer:{id}:frozen_hold:{ccy}` | 冻结预留，风控冻结的 pending 资金 |
-| `customer:{id}:reserve:{ccy}` | 保证金，90 天后释放到 available |
+| `customer:{id}:reserve:fixed:{ccy}` | 固定保证金，手动释放到 available |
+| `customer:{id}:reserve:rolling:{ccy}` | 滚动保证金，N 天后自动释放到 available |
 
 ### 平台账户
 
@@ -40,7 +41,8 @@
   customer:abc:available:USD      → $94.00
   customer:abc:pending:USD        → $50.00
   customer:abc:frozen_hold:USD    → $20.00
-  customer:abc:reserve:USD        → $2.50
+  customer:abc:reserve:fixed:USD    → $1.50
+  customer:abc:reserve:rolling:USD  → $1.00
 
 客户 xyz:
   customer:xyz:available:EUR      → €300.00
@@ -60,10 +62,10 @@
 ┌─────────────────────────────────────────────────────┐
 │              customer:{id}:pending:{ccy}             │
 │                                                      │
-│  pending = pending_available + frozen_hold            │
-│  即: pending 账户余额 = 可结算部分 + 冻结部分          │
+│  冻结时: pending 减少, frozen_hold 增加（划出）    │
+│  解冻后: frozen_hold → available 或 pending          │
 │                                                      │
-│  T+7 结算时: pending - frozen_hold → available        │
+│  T+7 结算时: 剩余 pending → available                │
 │  冻结部分: 解冻后 → available                         │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
@@ -73,14 +75,19 @@
 │  如为负数: 从后续收入抵扣                               │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
-│              customer:{id}:reserve:{ccy}              │
+│              customer:{id}:reserve:fixed:{ccy}        │
 │                                                      │
-│  保证金，90 天后全额释放到 available                    │
+│  固定保证金，手动释放到 available                       │
+│                                                      │
+├─────────────────────────────────────────────────────┤
+│              customer:{id}:reserve:rolling:{ccy}      │
+│                                                      │
+│  滚动保证金，N 天后自动释放到 available                 │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
 │              customer:{id}:frozen_hold:{ccy}          │
 │                                                      │
-│  冻结预留，从 pending 借出                              │
+│  冻结预留，从 pending 中划出（pending 减少对应金额）      │
 │  解冻后贷回 available                                  │
 │                                                      │
 └─────────────────────────────────────────────────────┘
@@ -91,7 +98,7 @@
 ```
 可结算金额    = pending - frozen_hold
 商户总资金    = available + pending + reserve
-可退款金额    = 商户总资金
+可退款金额    = available + pending（不含 reserve）
 ```
 
 ## 并发控制：乐观锁
@@ -175,13 +182,15 @@
 
   借  customer:abc:pending:USD            -$50.00
   贷  customer:abc:available:USD          +$47.00    ← 商户可用余额
-  贷  customer:abc:reserve:USD            +$2.50     ← 保证金 = $50 × 5%
+  贷  customer:abc:reserve:fixed:USD      +$1.50     ← 固定保证金 = $50 × 3%
+  贷  customer:abc:reserve:rolling:USD    +$1.00     ← 滚动保证金 = $50 × 2%
   贷  revenue:fee:acquiring               +$0.50     ← 服务费 = $100 × 1%
 
   缓存余额:
-    customer:abc:pending     = $0
-    customer:abc:available   = $47
-    customer:abc:reserve     = $2.50
+    customer:abc:pending          = $0
+    customer:abc:available        = $47
+    customer:abc:reserve:fixed    = $1.50
+    customer:abc:reserve:rolling  = $1.00
     customer:abc:frozen_hold = $20（仍未解冻）
 
 ── T+8 解冻 $20 ───────────────────────────────────────
@@ -195,12 +204,14 @@
 
 ── T+97 保证金释放 ────────────────────────────────────
 
-  借  customer:abc:reserve:USD            -$2.50
+  借  customer:abc:reserve:fixed:USD      -$1.50
+  借  customer:abc:reserve:rolling:USD    -$1.00
   贷  customer:abc:available:USD          +$2.50
 
   缓存余额:
-    customer:abc:available = $69.50
-    customer:abc:reserve   = $0
+    customer:abc:available        = $69.50
+    customer:abc:reserve:fixed    = $0
+    customer:abc:reserve:rolling  = $0
 ```
 
 ## 负余额场景

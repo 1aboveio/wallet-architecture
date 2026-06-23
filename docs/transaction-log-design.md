@@ -200,7 +200,7 @@ refunds                     entries
    RFD-001 | TXN-001 | merchant:abc | $30 | USD | COMPLETED | buyer_request
 
 4. settlements:
-   STL-001 | merchant:abc | $100 | -$30 | -$1 | -$3.50 | $65.50 | COMPLETED
+   STL-001 | merchant:abc | $100 | $0 | -$1 | -$5.00 | $94.00 | COMPLETED
 
 ── 账本分录 ────────────────────────────────────────────
 
@@ -208,14 +208,19 @@ refunds                     entries
    借  clearing:acquiring:USD       +$100
    贷  customer:abc:pending:USD     +$100
 
-2. JNL-002 (退款):
-   借  customer:abc:pending:USD     -$30
+2. JNL-002 (退款 - SETTLED 后从 available 扣减):
+   借  customer:abc:available:USD   -$30
    贷  receivable:txn:USD           -$30
 
+   同时退回滚动保证金（按比例）:
+   借  customer:abc:reserve:rolling:USD  -$0.60
+   贷  customer:abc:available:USD        +$0.60
+
 3. JNL-003 (结算):
-   借  customer:abc:pending:USD     -$70
-   贷  customer:abc:available:USD   +$65.50
-   贷  customer:abc:reserve:USD     +$3.50
+   借  customer:abc:pending:USD     -$100
+   贷  customer:abc:available:USD   +$94.00
+   贷  customer:abc:reserve:fixed:USD   +$3.00
+   贷  customer:abc:reserve:rolling:USD +$2.00
    贷  revenue:fee:acquiring        +$1.00
 ```
 
