@@ -15,7 +15,7 @@ _Avoid_: 呈现金额, 展示金额, 原单金额, display_amount, checkout_amou
 _Avoid_: 呈现币种, 展示币种, display_currency, transaction_currency（太宽）
 
 **入账金额 (booking_amount)**:
-请款金额按锁汇折成该笔结算币种之后、扣费之前的金额。同币种时等于请款金额。
+请款金额按入账汇率换汇成该笔结算币种之后、扣费之前的金额。同币种时等于请款金额。
 _Avoid_: 结算币毛额, 毛额, GTV, 结算原额, 原单金额, settlement_gross
 
 **结算币种 (settlement_currency)**:
@@ -34,13 +34,13 @@ _Avoid_: 主币, home_currency, billing_currency, functional_currency
 通道付给平台、并据以入账 interchange / scheme / 通道费的币种。金额以通道结算文件为准，平台不按 IRF 表重算。
 _Avoid_: 卡组清算币种（口语可指同一件事，字段用 channel_settlement_currency）, scheme_currency, acquirer_reconciliation_currency
 
-**锁汇 (capture_fx_rate)**:
-CAPTURE 锁定的请款币种 → 结算币种汇率。只用于 CAPTURE 入账与 VOID 冲回。
-_Avoid_: 用锁汇做退款商户扣款
+**入账汇率 (booking_fx_rate)**:
+CAPTURE 换汇用的请款币种 → 结算币种汇率。只决定入账金额，以及 VOID 冲原换汇分录。不是锁汇：退款不用它。
+_Avoid_: 锁汇, capture_fx_rate, locked_rate
 
 **退款汇率 (refund_fx_rate)**:
-退款时请款币种 → 结算币种的汇率。优先用通道该笔退款汇率，否则用退款时牌价。商户 `refund_booking_amount` 用它，不用锁汇。
-_Avoid_: capture_fx_rate, 报表用的 mid_market_rate
+退款时请款币种 → 结算币种的汇率。优先用通道该笔退款汇率，否则用退款时牌价。商户 `refund_booking_amount` 用它。
+_Avoid_: booking_fx_rate, 报表用的 mid_market_rate
 
 ### 费用与保证金
 
@@ -49,15 +49,15 @@ _Avoid_: capture_fx_rate, 报表用的 mid_market_rate
 _Avoid_: 用入账金额重乘 MDR（有兑汇时先按请款金额计价再折算）
 
 **按笔费 (per_item_fee)**:
-网关费、3DS 等按笔固定费用。以主币种标价，CAPTURE 锁汇后折成结算币种从入账金额扣。退款不退。
-_Avoid_: 按请款币种标价, 另从主币种钱包扣一笔
+网关费、3DS 等。**标价**用主币种（合同上的 $0.10）；**扣账**从该笔结算币种钱包扣，用入账汇率把标价折成结算币种。请款与结算都是 EUR、主币种 USD 时，扣 EUR 账户，不扣 USD 账户。退款不退。
+_Avoid_: 从主币种钱包另扣一笔, 按请款币种标价
 
 **滚动保证金 (rolling_reserve)**:
 入账金额 × 比率，记入 `reserve:rolling:{settlement_currency}`。HELD 状态退款按请款金额比例退回同币 available（`refund_presentment_amount / presentment_amount × original_rolling_reserve`）；已释放或已升级不退。
 _Avoid_: 按请款币种或上游结算币种单开滚动池, 按入账即期比例退回
 
 **固定保证金 (fixed_reserve)**:
-账户级抵押。目标金额与账户为 `reserve:fixed:{primary_currency}`。从该笔剩余入账金额按锁汇折进主币种抽；退款不退回。
+账户级抵押。目标金额与账户为 `reserve:fixed:{primary_currency}`。从该笔剩余入账金额按入账汇率折进主币种抽；退款不退回。
 _Avoid_: 每个开通结算币种各设一个固定目标
 
 ### 退款
@@ -68,4 +68,4 @@ _Avoid_: 用入账金额做买家侧上限
 
 **退款入账金额 (refund_booking_amount)**:
 退款请款金额 × 退款汇率，从该笔结算币种钱包扣减。请款侧尾笔吃分位；入账侧加总可以不等于原入账金额（汇差在商户）。
-_Avoid_: 用锁汇折退款入账, 强制入账侧加总还原
+_Avoid_: 用入账汇率折退款入账, 强制入账侧加总还原
