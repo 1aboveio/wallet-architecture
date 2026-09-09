@@ -1,6 +1,6 @@
 # 复式记账分录参考（Double-Entry Bookkeeping Reference）
 
-收款 / 换汇 / 提现分录仍用本文。收单清分（含多币种）以 [ADR 0004](adr/0004-multi-currency-clearing.md) 和 [分录手册](acquiring-journals.md) 为准。
+收款 / 换汇 / 提现分录仍用本文。收单清分以 [journals/](journals/) 为准。
 
 ## 账户总览
 

@@ -2,7 +2,7 @@
 
 下游按请款 / 入账 / 结算 / 主币种分账。CAPTURE 按当时牌价换汇入账（入账汇率）；退款商户侧用即期（有通道价则跟通道）。汇差由商户承担，平台不对退款做 FX 自营。入账汇率不是锁汇。
 
-术语见 [CONTEXT.md](../../CONTEXT.md)。分录见 [收单清分分录手册](../acquiring-journals.md)。
+术语见 [CONTEXT.md](../../CONTEXT.md)。分录见 [journals/acquiring.md](../journals/acquiring.md)。
 
 ## 核心原则
 
@@ -61,7 +61,7 @@ CAPTURE 换汇只决定当时怎么把请款金额写成入账金额。退款买
 
 校验：`refund_presentment_amount` 累计 ≤ 原请款金额。尾笔请款侧吃分位；入账侧不强制加总还原入账金额。
 
-分录：同币种、EUR→USD、开通 EUR、主币种兜底、THB→USD、VOID 见 [acquiring-journals.md](../acquiring-journals.md)。
+分录见 [journals/acquiring.md](../journals/acquiring.md)。
 
 ## 与既有 ADR
 

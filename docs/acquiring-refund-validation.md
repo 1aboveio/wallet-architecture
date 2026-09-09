@@ -1,6 +1,6 @@
 # 退款校验规则（Refund Validation Rules）
 
-以 [ADR 0001](adr/0001-refund-logic.md) / [0004](adr/0004-multi-currency-clearing.md) 为准。分录见 [acquiring-journals.md](acquiring-journals.md)。
+以 [ADR 0001](adr/0001-refund-logic.md) / [0004](adr/0004-multi-currency-clearing.md) 为准。分录见 [journals/acquiring.md](journals/acquiring.md)。
 
 ## 设计原则
 

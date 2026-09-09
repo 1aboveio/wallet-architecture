@@ -1,6 +1,6 @@
 # 收单清分分录手册
 
-规则只在 ADR 里改。这里只给分录。词见 [CONTEXT.md](../CONTEXT.md)，原则见 [ADR 0004](adr/0004-multi-currency-clearing.md)。
+规则只在 ADR 里改。这里只给分录。词见 [CONTEXT.md](../../CONTEXT.md)，原则见 [ADR 0004](../adr/0004-multi-currency-clearing.md)。
 
 默认商户：主币种 USD，开通结算币 {USD}（未特别声明时）。MDR 1.5%，按笔费 $0.30，滚动 5%，本笔固定抽 $2.00。金额四舍五入到分。
 
@@ -173,3 +173,24 @@ MDR = THB 3,500 × 1.5% 再折 USD，**不要** $100 × 1.5%。
 | 滚动按退款入账/入账金额（即期）退 | 按请款金额比例退 |
 | EUR rolling 升级进 USD 固定 | 只升 `rolling:USD` → `fixed:USD` |
 | 从 pending 退款 | SETTLED 后扣 available；之前 VOID |
+
+---
+
+## G. 同币种退款：滚动 HELD（ADR 0001 Case 1）
+
+原请款 $100，滚动 $5，MDR $1.00。退 $30。
+
+```
+  借  customer:abc:available:USD             -$30.00
+  贷  receivable:txn:USD                     -$30.00
+
+  借  revenue:fee:acquiring:USD              -$0.30
+  贷  customer:abc:available:USD             +$0.30
+
+  借  customer:abc:reserve:rolling:USD       -$1.50
+  贷  customer:abc:available:USD             +$1.50
+```
+
+净：available −$28.20。
+
+滚动已 RELEASED / RESERVE_RELEASED：无第三条。固定保证金：永不退。

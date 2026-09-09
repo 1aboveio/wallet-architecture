@@ -1,6 +1,6 @@
 # 收单清算逻辑（Acquiring Settlement Clearing）
 
-规则以 ADR 0001–0004 为准。多币种分录见 [acquiring-journals.md](acquiring-journals.md)。下文同币种示意。
+规则以 ADR 为准。分录见 [journals/acquiring.md](journals/acquiring.md)。
 
 ## 概述
 
