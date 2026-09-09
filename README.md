@@ -1,76 +1,50 @@
 # 全球钱包平台 — 产品架构与设计文档
 
-全球钱包平台产品架构设计，覆盖收单、收款、换汇、提现等核心支付场景的记账逻辑与风控规则。
+规则以 ADR 为准，词以 [CONTEXT.md](CONTEXT.md) 为准，分录以 [docs/journals/](docs/journals/) 为准。
 
-规则以 ADR 为准，词以 [CONTEXT.md](CONTEXT.md) 为准，分录以 [docs/journals/](docs/journals/) 为准。其余文章是背景或附录，不另立规则。
+## 怎么读
 
-## 文档目录
+1. [CONTEXT.md](CONTEXT.md) — 词  
+2. [docs/adr/](docs/adr/) — 决定了什么  
+3. [docs/journals/](docs/journals/) — 怎么记账  
 
-### 账户体系
-
-| 文档 | 说明 |
-|------|------|
-| [领域词表](CONTEXT.md) | 请款 / 入账 / 结算币种 / 主币种 / 入账汇率 |
-| [账户体系与余额设计](docs/account-balance-design.md) | 账户命名规则、余额结构、乐观锁并发控制、定期对账 |
-| [账户设计双视角](docs/chart-of-accounts-dual.md) | 财务视角（Receivable）与支付行业视角（Clearing）两套方案对照 |
-| [复式记账分录参考](docs/double-entry-bookkeeping.md) | 收款、换汇、提现、收单、冻结、保证金释放等九大场景完整分录 |
-| [流水账设计](docs/transaction-log-design.md) | 流水账与账本的关系、六类流水表结构、查询场景对照 |
-
-### 收单业务（Acquiring）
+## 权威文档
 
 | 文档 | 说明 |
 |------|------|
-| [收单信息流](docs/acquiring-information-flow.md) | Auth → Capture → Settle(Acq→PF) → Settle(PF→Merchant) 全流程信息流 |
-| [收单资金流](docs/acquiring-fund-flow.md) | 各环节资金走向、扣费明细、停留时间 |
-| [收单清算逻辑](docs/acquiring-settlement-clearing.md) | 面向商户的分层清算，三种退款场景（无退款/部分退款/全额退款）记账分录 |
-| [退款校验规则](docs/acquiring-refund-validation.md) | 防资损校验、主币种兜底、负余额、保证金释放 |
-| [ADR 0004 多币种清分](docs/adr/0004-multi-currency-clearing.md) | 四币、CAPTURE 换汇、退款即期、按笔费扣结算钱包 |
-| [ADR 0005 账本不变量](docs/adr/0005-ledger-invariants.md) | 钱包隔离、冻结即账户、复式分币种平衡、上下游分账 |
-| [分录手册](docs/journals/) | 收单清分 / 退款 / 保证金（含多币种） |
+| [CONTEXT.md](CONTEXT.md) | 请款 / 入账 / 结算币种 / 主币种 / 入账汇率 / 退款汇率 / 兜底汇率 |
+| [ADR 0001](docs/adr/0001-refund-logic.md) | 退款资金、主币种兜底、负余额 |
+| [ADR 0002](docs/adr/0002-reserve-mechanism.md) | 固定 / 滚动保证金 |
+| [ADR 0003](docs/adr/0003-transaction-status-model.md) | 状态机；SETTLED 是下游退款闸门 |
+| [ADR 0004](docs/adr/0004-multi-currency-clearing.md) | 多币种清分、CAPTURE 换汇、退款即期 |
+| [ADR 0005](docs/adr/0005-ledger-invariants.md) | 钱包隔离、冻结即账户、分币种平衡 |
+| [分录手册](docs/journals/) | 收单 / 保证金 / 收款 / 换汇 / 提现 / 冻结 |
+| [PRD](docs/prd/prd-payment-ledger.md) | 产品需求 |
+
+## 仍在用的实现/模型稿
+
+| 文档 | 说明 |
+|------|------|
+| [账户与余额](docs/account-balance-design.md) | 命名、缓存、乐观锁、对账 |
+| [科目双视角](docs/chart-of-accounts-dual.md) | receivable vs clearing（尚未选定） |
+| [Order / Transaction / Movement](docs/order-transaction-booking-er.md) | 实体关系 |
+| [流水账](docs/transaction-log-design.md) | 六类流水表 |
+| [行业引用](docs/industry-references.md) | 外部资料 |
+
+历史叙述（清算/信息流/整本复式分录等）在 [docs/archive/](docs/archive/)，**不要当现行规则**。
 
 ## 核心设计决策
 
 | # | 决策 | 选择 |
 |---|------|------|
 | 1 | 钱包架构 | 一个钱包，多币种子余额（ADR 0005） |
-| 2 | 账户命名 | 客户 ID 嵌入账户名，物理隔离（ADR 0005） |
-| 3 | 冻结机制 | 冻结作为账户（frozen_hold），非状态标记（ADR 0005） |
-| 4 | 上下游关系 | 上游结算与下游结算是独立事件，互不影响（ADR 0005） |
-| 5 | 退款扣减 | 仅 SETTLED 后从 available 扣；未结算走 VOID（ADR 0003） |
-| 6 | 保证金 | 滚动按入账金额、到期释放到结算币种；固定目标在主币种、手动释放 |
-| 7 | 负余额 | 退款先扣结算钱包再扣主币种；同币种后续收入抵扣（ADR 0001） |
-| 8 | 余额计算 | 缓存余额 + 乐观锁 + 定期对账；账本为真相源（ADR 0005） |
-
-## 业务模型
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    客户层 (Customer)                  │
-│  开户 · KYC · 账户管理 · 权限                         │
-├─────────────────────────────────────────────────────┤
-│                    钱包层 (Wallet)                    │
-│  多币种余额 · available / pending / frozen / reserve  │
-├─────────────────────────────────────────────────────┤
-│                    资金流动层 (Flow)                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│  │ 收款      │  │ 收单      │  │ 换汇      │           │
-│  │ Collection│  │ Acquiring│  │ FX       │           │
-│  └──────────┘  └──────────┘  └──────────┘           │
-│  ┌──────────┐  ┌──────────┐                          │
-│  │ 付款      │  │ 提现      │                          │
-│  │ Payout   │  │ Withdraw │                          │
-│  └──────────┘  └──────────┘                          │
-├─────────────────────────────────────────────────────┤
-│                    账本层 (Ledger)                    │
-│  复式记账 · 双重校验 · 不可变分录                       │
-├─────────────────────────────────────────────────────┤
-│                    合规层 (Compliance)                │
-│  KYC · AML · 制裁筛查 · 交易监控 · 风控冻结            │
-├─────────────────────────────────────────────────────┤
-│                    基础设施层 (Infrastructure)         │
-│  银行通道 · 支付网络 · API · Webhook                  │
-└─────────────────────────────────────────────────────┘
-```
+| 2 | 账户命名 | 客户 ID 嵌入账户名（ADR 0005） |
+| 3 | 冻结 | 账户 `frozen_hold`，非状态（ADR 0005） |
+| 4 | 上下游 | 两本独立的账（ADR 0005） |
+| 5 | 退款 | SETTLED 或未退完的 REFUNDED 从 available 扣；之前 VOID（ADR 0003） |
+| 6 | 保证金 | 滚动按入账、到期释放；固定在主币种、手动释放（ADR 0002） |
+| 7 | 负余额 | 先结算钱包再主币种；同币种后续收入抵扣（ADR 0001） |
+| 8 | 余额 | 缓存 + 乐观锁；账本为真相源（ADR 0005） |
 
 ## 客户画像
 

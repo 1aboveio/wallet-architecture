@@ -1,3 +1,5 @@
+> **已归档（2026-04-01）。非权威。** 规则以 [ADR](../adr/) 为准，分录以 [journals](../journals/) 为准。
+
 # 退款校验规则（Refund Validation Rules）
 
 以 [ADR 0001](adr/0001-refund-logic.md) / [0004](adr/0004-multi-currency-clearing.md) 为准。分录见 [journals/acquiring.md](journals/acquiring.md)。

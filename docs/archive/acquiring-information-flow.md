@@ -1,3 +1,5 @@
+> **已归档（2026-04-01）。非权威。** 规则以 [ADR](../adr/) 为准，分录以 [journals](../journals/) 为准。
+
 # 收单信息流（Acquiring Information Flow）
 
 ```mermaid

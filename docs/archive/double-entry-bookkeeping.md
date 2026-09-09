@@ -1,3 +1,5 @@
+> **已归档（2026-04-01）。非权威。** 规则以 [ADR](../adr/) 为准，分录以 [journals](../journals/) 为准。
+
 # 复式记账分录参考（Double-Entry Bookkeeping Reference）
 
 收款 / 换汇 / 提现分录仍用本文。收单清分以 [journals/](journals/) 为准。
