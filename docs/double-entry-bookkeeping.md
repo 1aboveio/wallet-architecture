@@ -1,5 +1,7 @@
 # 复式记账分录参考（Double-Entry Bookkeeping Reference）
 
+同币种 USD 样例。跨币种、退款即期、按笔费与主币种兜底以 [ADR 0004](adr/0004-multi-currency-clearing.md) 为准。MDR 退款按请款比例退回。
+
 ## 账户总览
 
 ### 客户账户（Liability）
@@ -188,8 +190,12 @@
   借  customer:abc:reserve:rolling:USD     -$0.60
   贷  customer:abc:available:USD           +$0.60
 
+  MDR 按请款比例退回 = $30/$100 × $1.00 = $0.30:
+  借  revenue:fee:acquiring:USD            -$0.30
+  贷  customer:abc:available:USD           +$0.30
+
   缓存余额:
-    available       = $94.00 - $30.00 + $0.60 = $64.60
+    available       = $94.00 - $30.00 + $0.60 + $0.30 = $64.90
     reserve:fixed   = $3.00
     reserve:rolling = $2.00 - $0.60 = $1.40
 
@@ -199,7 +205,7 @@
   贷  customer:abc:available:USD           +$1.40
 
 最终结果:
-  customer:abc:available:USD = $66.00 ($64.60 + $1.40 释放)
+  customer:abc:available:USD = $66.30 ($64.90 + $1.40 释放)
 ```
 
 ---
@@ -240,13 +246,17 @@
   借  customer:abc:reserve:rolling:USD     -$2.00
   贷  customer:abc:available:USD           +$2.00
 
+  MDR 全额退回:
+  借  revenue:fee:acquiring:USD            -$1.00
+  贷  customer:abc:available:USD           +$1.00
+
   固定保证金: 不退回（全局目标，与单笔交易无关）
 
 最终结果:
-  customer:abc:available:USD = -$4.00（负余额）
+  customer:abc:available:USD = -$3.00（留下的固定保证金）
   reserve:fixed = $3.00（不变）
   reserve:rolling = $0
-  后续收入自动抵扣负余额 -$4.00
+  revenue = $0
 ```
 
 ---
@@ -388,7 +398,11 @@
   借  customer:abc:reserve:rolling:USD     -$0.60
   贷  customer:abc:available:USD           +$0.60
 
-  available: $94.00 - $30.00 + $0.60 = $64.60
+  MDR 按请款比例退回 $0.30:
+  借  revenue:fee:acquiring:USD            -$0.30
+  贷  customer:abc:available:USD           +$0.30
+
+  available: $94.00 - $30.00 + $0.60 + $0.30 = $64.90
   reserve:rolling: $2.00 - $0.60 = $1.40
 
 ── T+97 保证金释放（滚动部分剩余）─────────────────────
@@ -397,19 +411,19 @@
   贷  customer:abc:available:USD           +$1.40
 
   reserve:rolling: $0
-  available: $66.00
+  available: $66.30
 
 ── 最终汇总 ───────────────────────────────────────────
 
   客户 abc 最终状态:
-    available:      $66.00
+    available:      $66.30
     pending:        $0
     frozen_hold:    $0
     reserve:fixed:  $3.00（未释放，手动触发）
     reserve:rolling: $0
 
   平台收入:
-    服务费:   $1.00
+    服务费:   $0.70
     通道费:  -$2.50
     净收入:  -$1.50（本笔亏损，规模效应下整体盈利）
 

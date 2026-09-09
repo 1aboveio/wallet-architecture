@@ -89,11 +89,11 @@ CREATE TABLE settlements (
     merchant_id     VARCHAR(64) NOT NULL,
     period_start    TIMESTAMPTZ NOT NULL,             -- 结算周期开始
     period_end      TIMESTAMPTZ NOT NULL,             -- 结算周期结束
-    gross_amount    DECIMAL(18,4) NOT NULL,           -- 毛额
-    refund_amount   DECIMAL(18,4) NOT NULL,           -- 退款扣减
-    fee_amount      DECIMAL(18,4) NOT NULL,           -- 服务费
+    booking_amount  DECIMAL(18,4) NOT NULL,           -- 入账金额（请款按入账汇率）
+    refund_amount   DECIMAL(18,4) NOT NULL,           -- 退款入账累计
+    fee_amount      DECIMAL(18,4) NOT NULL,           -- MDR + 按笔费
     reserve_amount  DECIMAL(18,4) NOT NULL,           -- 保证金
-    net_amount      DECIMAL(18,4) NOT NULL,           -- 商户实收
+    net_amount      DECIMAL(18,4) NOT NULL,           -- 结算净额
     currency        VARCHAR(3) NOT NULL,
     status          VARCHAR(32) NOT NULL,             -- PENDING / PROCESSING / COMPLETED
     created_at      TIMESTAMPTZ NOT NULL,

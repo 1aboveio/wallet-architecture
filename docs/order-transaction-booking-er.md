@@ -22,7 +22,7 @@
 │   ▼                                                                             │
 │   Balance Movement（资金账）                                                     │
 │   │  记录每一笔余额变动                                                           │
-│   │  如：商户 pending +$100、平台收入 +$1、保证金 -$5                              │
+│   │  如：商户 pending +$100、平台收入 +$1、保证金 +$5                              │
 │   │                                                                             │
 │   │  对应 ↓                                                                      │
 │   ▼                                                                             │
@@ -104,7 +104,7 @@
 │   │  transaction_id: TXN-001                                                 │  │
 │   │  type: RESERVE                                                           │  │
 │   │  account: customer:abc:reserve:rolling:USD                               │  │
-│   │  amount: -$5.00                                                          │  │
+│   │  amount: +$5.00                                                          │  │
 │   │  created_at: 2024-01-15 10:00:05                                         │  │
 │   └──────────────────────────────────────────────────────────────────────────┘  │
 │         │                                                                       │
@@ -218,7 +218,7 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
      MOV-001: COLLECTION  customer:abc:pending:USD     +$100
      MOV-002: FEE         revenue:platform:mdr:USD     +$2.50
      MOV-003: FEE         revenue:platform:gateway:USD +$0.30
-     MOV-004: RESERVE     customer:abc:reserve:rolling:USD -$5.00
+     MOV-004: RESERVE     customer:abc:reserve:rolling:USD +$5.00
 
    Ledger Entries:
      JNL-001: 借 receivable:acquirer:USD +$100 / 贷 payable:merchant:pending:USD +$100

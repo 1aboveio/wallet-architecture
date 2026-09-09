@@ -8,6 +8,7 @@
 
 | 文档 | 说明 |
 |------|------|
+| [领域词表](CONTEXT.md) | 请款 / 入账 / 结算币种 / 主币种 / 入账汇率 |
 | [账户体系与余额设计](docs/account-balance-design.md) | 账户命名规则、余额结构、乐观锁并发控制、定期对账 |
 | [账户设计双视角](docs/chart-of-accounts-dual.md) | 财务视角（Receivable）与支付行业视角（Clearing）两套方案对照 |
 | [复式记账分录参考](docs/double-entry-bookkeeping.md) | 收款、换汇、提现、收单、冻结、保证金释放等九大场景完整分录 |
@@ -20,7 +21,8 @@
 | [收单信息流](docs/acquiring-information-flow.md) | Auth → Capture → Settle(Acq→PF) → Settle(PF→Merchant) 全流程信息流 |
 | [收单资金流](docs/acquiring-fund-flow.md) | 各环节资金走向、扣费明细、停留时间 |
 | [收单清算逻辑](docs/acquiring-settlement-clearing.md) | 面向商户的分层清算，三种退款场景（无退款/部分退款/全额退款）记账分录 |
-| [退款校验规则](docs/acquiring-refund-validation.md) | 防资损五条校验规则、三道防线、负余额处理、保证金释放 |
+| [退款校验规则](docs/acquiring-refund-validation.md) | 防资损校验、主币种兜底、负余额、保证金释放 |
+| [ADR 0004 多币种清分](docs/adr/0004-multi-currency-clearing.md) | 四币、CAPTURE 换汇、退款即期、按笔费扣结算钱包 |
 
 ## 核心设计决策
 
@@ -30,9 +32,9 @@
 | 2 | 账户命名 | 客户 ID 嵌入账户名，物理隔离 |
 | 3 | 冻结机制 | 冻结作为账户（frozen_hold），非状态标记 |
 | 4 | 上下游关系 | 上游结算与下游结算是独立事件，互不影响 |
-| 5 | 退款扣减 | 退款直接扣 pending，商户实时可见 |
-| 6 | 保证金 | 按实际结算金额计算比率，90 天后全额释放 |
-| 7 | 负余额 | 从后续收入（新结算 + 保证金释放）抵扣 |
+| 5 | 退款扣减 | 仅 SETTLED 后从 available 扣；未结算走 VOID（ADR 0003） |
+| 6 | 保证金 | 滚动按入账金额、到期释放到结算币种；固定目标在主币种、手动释放 |
+| 7 | 负余额 | 退款先扣结算钱包再扣主币种；同币种后续收入抵扣（ADR 0001） |
 | 8 | 余额计算 | 缓存余额 + 乐观锁 + 定期对账 |
 
 ## 业务模型

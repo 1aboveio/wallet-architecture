@@ -98,7 +98,8 @@
 ```
 可结算金额    = pending - frozen_hold
 商户总资金    = available + pending + reserve
-可退款金额    = available + pending（不含 reserve）
+可退款覆盖    = available:{S} + pending:{S} + 主币种 available 折 S（不含 reserve）
+退款实扣      = available:{S} → available:{primary}（不扣 pending / reserve）
 ```
 
 ## 并发控制：乐观锁
@@ -146,96 +147,43 @@
 
 ## 完整分录示例
 
-以客户 abc、原交易 $100、退款 $30、冻结 $20 为例：
+同币种示意。CAPTURE 清分、退款即期与主币种兜底见 [ADR 0004](adr/0004-multi-currency-clearing.md)。退款不得从 pending 扣。
+
+以客户 abc、请款 $100 为例：
 
 ```
-── T+0 Capture ────────────────────────────────────────
+── CAPTURE 入账 + 清分（同币种）────────────────────────
 
   借  receivable:txn:USD                  +$100.00
   贷  customer:abc:pending:USD            +$100.00
 
-  缓存余额:
-    customer:abc:pending = $100
+  借  customer:abc:pending:USD            -$100.00
+  贷  customer:abc:available:USD          +$94.00
+  贷  customer:abc:reserve:fixed:USD      +$3.00
+  贷  customer:abc:reserve:rolling:USD    +$2.00
+  贷  revenue:fee:acquiring:USD           +$1.00
 
-── T+3 退款 $30 ───────────────────────────────────────
+── SETTLED 后退款请款 $30 ─────────────────────────────
 
-  借  customer:abc:pending:USD            -$30.00
+  借  customer:abc:available:USD          -$30.00
   贷  receivable:txn:USD                  -$30.00
+  借  revenue:fee:acquiring:USD           -$0.30
+  贷  customer:abc:available:USD          +$0.30
+  借  customer:abc:reserve:rolling:USD    -$0.60
+  贷  customer:abc:available:USD          +$0.60
 
-  缓存余额:
-    customer:abc:pending = $70
-
-── T+5 风控冻结 $20 ───────────────────────────────────
-
-  借  customer:abc:pending:USD            -$20.00
-  贷  customer:abc:frozen_hold:USD        +$20.00
-
-  缓存余额:
-    customer:abc:pending      = $50
-    customer:abc:frozen_hold  = $20
-    可结算金额 = $50 - $20 = $30（但 frozen_hold 独立账户，pending 本身已扣）
-
-  注意: pending 已经是 $50，frozen_hold 是独立的 $20
-        实际可结算 = pending = $50（冻结部分已不在 pending 里）
-
-── T+7 结算 ───────────────────────────────────────────
-
-  借  customer:abc:pending:USD            -$50.00
-  贷  customer:abc:available:USD          +$47.00    ← 商户可用余额
-  贷  customer:abc:reserve:fixed:USD      +$1.50     ← 固定保证金 = $50 × 3%
-  贷  customer:abc:reserve:rolling:USD    +$1.00     ← 滚动保证金 = $50 × 2%
-  贷  revenue:fee:acquiring               +$0.50     ← 服务费 = $100 × 1%
-
-  缓存余额:
-    customer:abc:pending          = $0
-    customer:abc:available        = $47
-    customer:abc:reserve:fixed    = $1.50
-    customer:abc:reserve:rolling  = $1.00
-    customer:abc:frozen_hold = $20（仍未解冻）
-
-── T+8 解冻 $20 ───────────────────────────────────────
-
-  借  customer:abc:frozen_hold:USD        -$20.00
-  贷  customer:abc:available:USD          +$20.00
-
-  缓存余额:
-    customer:abc:available   = $67
-    customer:abc:frozen_hold = $0
-
-── T+97 保证金释放 ────────────────────────────────────
-
-  借  customer:abc:reserve:fixed:USD      -$1.50
-  借  customer:abc:reserve:rolling:USD    -$1.00
-  贷  customer:abc:available:USD          +$2.50
-
-  缓存余额:
-    customer:abc:available        = $69.50
-    customer:abc:reserve:fixed    = $0
-    customer:abc:reserve:rolling  = $0
+冻结是 pending → frozen_hold，与退款无关。
 ```
 
 ## 负余额场景
 
 ```
-场景: 商户已提现 $94，后发生退款 $100
+场景: 商户已提现，SETTLED 后全额退款（同币种，ADR 0001 / 0004）
 
-T+0   available = $94
-T+0   商户提现 $94 → available = $0
-T+3   退款 $100
-        规则校验: 总资金 = $0 + $100(pending) + $0 = $100 ≥ $100 ✅
-        借 customer:abc:pending -$100
-        贷 receivable:txn -$100
-
-T+7   结算: pending = $0，无结算
-
-假设后续有新交易结算 $94:
-T+10  借 receivable:txn +$94
-      贷 customer:abc:pending +$94
-
-T+17  结算 $94:
-      服务费 $0.94, 保证金 $4.70
-      商户实收 = $94 - $0.94 - $4.70 = $88.36
-
-      但需先抵扣负余额（如有）:
-      如 available 已为 -$6 → 实际入账 $88.36 - $6 = $82.36
+available = $0（已提现）
+退款请款 $100 → 退款入账 $100
+实扣 available:USD（= primary）→ -$100（不拒绝）
+退 MDR、退滚动 HELD 贷回 available
+固定不退
+后续同币种结算净额先冲负 available
 ```

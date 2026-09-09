@@ -8,9 +8,9 @@
 
 见 [ADR 0001 退款逻辑设计](adr/0001-refund-logic.md)。
 
-1. **退款可用资金不包含保证金** — reserve 仅用于覆盖争议/拒付，不参与退款
-2. **已结算退款时保证金同步退回** — 退款与保证金退还在同一事务内完成
-3. **允许退款产生负余额** — available 不足时不拒绝退款，后续收入自动抵扣
+1. **覆盖口径不含保证金** — reserve 不参与可退款资金；可含 pending 与主币种 available 折算（ADR 0001）
+2. **只退滚动 HELD** — 按请款比例；固定保证金不退；已释放/已升级不退
+3. **资金不足不拒绝** — 实扣结算 available，不足扣主币种，再不足主币种为负
 
 ## 退款记账规则
 
@@ -19,14 +19,13 @@
 
 Case 1: 原交易已结算（SETTLED）
   来源: available（允许负余额）
-  校验: 退款金额 ≤ 原交易金额 - 已退款累计
+  校验: 退款请款金额 ≤ 原请款金额 - 已退请款累计
+  实扣: available:{S} → available:{primary}（ADR 0001）
 
-  借  customer:{id}:available:{ccy}  -退款金额
-  贷  receivable:txn:{ccy}           -退款金额
+  借  customer:{id}:available:{S}          -退款入账金额（即期）
+  贷  receivable:txn:{S}                   -退款入账金额
 
-  同时退回滚动保证金（仅 HELD 状态）:
-  借  customer:{id}:reserve:rolling:{ccy}  -退回金额
-  贷  customer:{id}:available:{ccy}       +退回金额
+  MDR 按请款比例退回；滚动 HELD 按请款比例退回 available:{S}
 ```
 
 ## 退款校验规则
@@ -36,9 +35,9 @@ Case 1: 原交易已结算（SETTLED）
 ### 规则 1：金额校验
 
 ```
-退款可执行金额 = 原交易金额 - 已退款累计金额
+退款可执行金额 = 原请款金额 - 已退请款累计
 
-IF requested_refund > 退款可执行金额
+IF refund_presentment_amount > 退款可执行金额
   → REJECT "REFUND_EXCEEDS_AVAILABLE"
 ```
 
@@ -70,17 +69,20 @@ REFUND_WINDOW 建议:
   平台自定义: 可缩短
 ```
 
-### 规则 4：商户资金兜底校验
+### 规则 4：商户资金（不拒绝）
 
 ```
-商户可退款资金 = available_balance
-              + pending_balance
+可退款资金 = available:{S} + pending:{S}
+           + (S ≠ primary ? available:{primary} 折成 S : 0)
+不含 reserve
 
-IF requested_refund > 商户可退款资金
-  → REJECT "INSUFFICIENT_MERCHANT_FUNDS"
+实扣顺序:
+  1. available:{S} 扣到 0
+  2. 缺口扣 available:{primary}（refund_fx_rate）
+  3. 仍不足 → available:{primary} 为负，不 REJECT
 ```
 
-**注意：** reserve_balance 不参与退款可用资金计算（见 ADR 0001）。available 可能为负（历史负余额未抵扣完），负的 available 会减少可退款资金。
+pending 只进覆盖、不进实扣。详见 ADR 0001 / 0004。
 
 ### 规则 5：幂等校验
 
@@ -95,10 +97,10 @@ IF refund_id 已存在于退款记录
 
 | # | 规则 | 校验内容 | 失败返回码 |
 |---|------|----------|-----------|
-| 1 | 金额校验 | 退款 ≤ 原交易金额 - 已退款累计 | REFUND_EXCEEDS_AVAILABLE |
+| 1 | 金额校验 | 退款请款 ≤ 原请款 − 已退请款 | REFUND_EXCEEDS_AVAILABLE |
 | 2 | 状态校验 | 交易状态为 SETTLED | INVALID_TRANSACTION_STATUS |
 | 3 | 窗口校验 | 在退款窗口期内 | REFUND_WINDOW_EXPIRED |
-| 4 | 资金校验 | 退款 ≤ 商户可退款资金（available + pending，不含 reserve） | INSUFFICIENT_MERCHANT_FUNDS |
+| 4 | 资金 | 覆盖口径见 ADR 0001；不足走主币种兜底/负余额，不拒绝 | — |
 | 5 | 幂等校验 | refund_id 唯一 | 返回已有结果 |
 
 ## 三道防线
@@ -111,9 +113,9 @@ IF refund_id 已存在于退款记录
         │ 规则 1   │           │ 逐笔清算  │          │ 每日对账  │
         │ 规则 2   │           │ 保证金    │          │ 拒付监控  │
         │ 规则 3   │           │ 重新计算  │          │ 负余额   │
-        │ 规则 4   │           │ 兜底校验  │          │ 追缴     │
-        │ 规则 5   │           │ available │          │ 余额预警  │
-        │          │           │ ≥ 0      │          │ 冻结交易  │
+        │ 规则 4   │           │ 不拒退款  │          │ 追缴     │
+        │ 规则 5   │           │ 负余额   │          │ 余额预警  │
+        │          │           │ 同币种冲  │          │ 冻结交易  │
         └──────────┘           └──────────┘          └──────────┘
 ```
 
@@ -175,13 +177,7 @@ T+10 发起退款 $30
 ## 保证金释放规则
 
 ```
-释放条件: T+7 结算日起算，满 90 天
-释放方式: 全额释放到 available
-
-T+7   结算 → reserve = $5
-T+97  释放 → reserve = $0, available += $5
-
-释放时如有负余额:
-  available = available + $5
-  如仍为负，继续从后续收入抵扣
+滚动: 按 entry 的 release_date 释放到 available:{settlement_currency}
+      释放时先冲同币种负 available（ADR 0001）
+固定: 手动释放到 available:{primary_currency}，退款不自动退
 ```
