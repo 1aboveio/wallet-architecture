@@ -243,12 +243,13 @@ IF 扣除后结算余额为负
 
 ### 升级（升级为固定保证金）
 
-商户风险等级下降时，可将滚动保证金**全额**升级为固定保证金。
+商户风险等级下降时，可将**主币种**滚动保证金全额升级为固定保证金。其他结算币种的 rolling 不能升级，到期释放到 `available:{settlement_currency}`。
 
 **约束条件：**
-- 必须全额升级，不允许部分升级
-- 升级后，原滚动保证金 entries 状态改为 `RESERVE_RELEASED`
-- 资金路径：直接 `rolling → fixed`，不经过 available
+- 只升级 `reserve:rolling:{primary_currency}` → `reserve:fixed:{primary_currency}`
+- 必须全额升级，不允许部分升级，不允许把 EUR rolling 兑成 USD fixed
+- 升级后，被升级的 rolling entries 状态改为 `RESERVE_RELEASED`
+- 资金路径：直接 `rolling → fixed`，不经过 available，无 FX
 
 ```
 滚动余额: $200（全额升级）
@@ -353,7 +354,7 @@ IF 扣除后结算余额为负
 | **退款退回** | ❌ 不退回 | ✅ 按比例退回（仅 HELD 状态） |
 | **累计路径** | pending→fixed, special→fixed | pending→rolling |
 | **释放路径** | fixed→available | rolling→available |
-| **升级路径** | — | rolling→fixed（全额，直接转） |
+| **升级路径** | — | 仅 primary 的 rolling→fixed（全额、同币、直接转） |
 | **账户** | `reserve:fixed:{ccy}` | `reserve:rolling:{ccy}` |
 
 ## 保证金选择规则

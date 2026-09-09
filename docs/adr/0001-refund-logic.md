@@ -2,19 +2,24 @@
 
 退款场景下的核心决策，涉及资金来源、保证金处理和负余额策略。多币种金额、即期退款汇率与记账样例见 [ADR 0004](0004-multi-currency-clearing.md)。
 
-## 决策 1：退款可用资金不包含保证金
+## 决策 1：退款可用资金不包含保证金，主币种作 fallback
 
-退款校验时，商户可退款资金仅包含 `available_balance` 和 `pending_balance`，不包含 `reserve_balance`（固定或滚动）。
+覆盖口径（该笔结算币种计）不含 reserve。结算钱包不够时，把主币种 available 按 `refund_fx_rate` 折进来。
 
 ```
-商户可退款资金 = available_balance + pending_balance
+可退款资金 = available:{S} + pending:{S}
+           + (S ≠ primary ? available:{primary} 折成 S : 0)
+S = 该笔 settlement_currency
+不含 reserve:fixed / reserve:rolling
 ```
+
+**覆盖 ≠ 实扣。** pending 只进覆盖、不进实扣（未结资金不能拿来付退款）。实扣见决策 3。
 
 ### 理由
 
 1. **防滥用** — 避免商户通过退款将保证金提前取出
-2. **防负余额** — 保证金被退款消耗后，可能产生大面积负余额
-3. **专款专用** — 保证金仅用于覆盖争议/拒付，不参与退款
+2. **专款专用** — 保证金仅用于覆盖争议/拒付，不参与退款
+3. **主币种兜底** — 结算钱包不够时先动主币种，而不是一边 EUR 为负、一边 USD 闲置
 
 ## 决策 2：已结算交易退款时，滚动保证金同步退回，固定保证金不退回
 
@@ -24,20 +29,27 @@
 - **MDR**：按请款比例退回（ADR 0003）
 - **按笔费**：不退
 
-## 决策 3：允许退款产生负余额
+## 决策 3：实扣结算钱包，不足扣主币种，再不足允许负余额
 
-已结算交易发起退款时，如果商户 `available_balance` 不足，允许退款并产生负余额，后续从新收入中自动抵扣。
-
-### 负余额抵扣机制
-
-后续收入自动冲抵负余额，优先级：
+退款请款校验通过后必须执行。实扣顺序：
 
 ```
-1. 新交易结算 → 先抵扣负余额，剩余入 available
-2. 保证金释放 → 先抵扣负余额，剩余入 available
+1. available:{S} 扣到 0（不扣 pending、不扣 reserve）
+2. 缺口按 refund_fx_rate 从 available:{primary} 扣
+3. 主币种仍不足：允许 available:{primary} 为负
+   （S = primary 时即该币种 available 为负）
 ```
 
-负余额只落在该笔 `settlement_currency` 的 available，不跨币种抵扣。
+S = primary 时没有第 2 步。滚动保证金退回仍贷 `available:{S}`。
+
+### 负余额抵扣
+
+只冲**同一币种**的后续收入，不自动跨币种：
+
+```
+1. 该币种新交易结算净额 → 先抵扣该币种负 available
+2. 该币种保证金释放 → 先抵扣该币种负 available
+```
 
 ---
 

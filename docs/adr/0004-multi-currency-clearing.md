@@ -13,7 +13,7 @@
 5. **退款汇率用即期。** 买家退原请款金额；商户扣 `refund_booking_amount = refund_presentment_amount × refund_fx_rate`。`refund_fx_rate` 优先用通道该笔退款汇率，否则用退款时牌价。不用 `booking_fx_rate`。
 6. **VOID 冲原入账汇率。** 未 SETTLED 的撤销是原分录反向，不是一笔新的 FX。
 7. **滚动退回按请款比例。** `rolling_return = refund_presentment_amount / presentment_amount × original_rolling_reserve`，币种仍是原结算币种。不用入账即期比例。
-8. **负余额不跨币。** 退款只落在该笔 `settlement_currency` 的 available。
+8. **退款实扣结算钱包，不足扣主币种。** 不扣 pending / reserve。主币种仍不足则 `available:{primary}` 为负。负余额只被同币种后续收入冲抵（ADR 0001）。滚动升级为固定只允许主币种同币直转（ADR 0002）。
 
 ### 为何不叫锁汇
 
@@ -195,10 +195,35 @@ available 净变动 -$112.85。原结算净额只入了 $100.55，不足部分�
   贷  customer:abc:reserve:fixed:USD         +$2.00
 ```
 
-退款不冲固定保证金，也不把 USD 固定兑回 EUR。
+退款不冲固定保证金，也不把 USD 固定兑回 EUR。EUR rolling 不能升级成 USD fixed，只能到期释放进 EUR available。
+
+### 7. 退款：结算钱包不够，主币种 fallback
+
+接例 6。退 €40，即期 1.20。退款入账 €40。available:EUR 仅 €10，available:USD $100。pending 与 reserve 不扣。
+
+- 先扣 EUR €10
+- 缺口 €30 × 1.20 = $36，扣 USD
+- 滚动 HELD 退回 €40/€100 × €5 = €2.00，贷回 EUR
+- MDR 退 €40/€100 × €1.50 = €0.60，贷回 EUR
+
+```
+  借  customer:abc:available:EUR             -€10.00
+  借  customer:abc:available:USD             -$36.00
+  贷  receivable:txn:EUR                     -€40.00
+  贷  clearing:fx:EUR_USD                    -€30.00
+  借  clearing:fx:EUR_USD                    +$36.00
+
+  借  revenue:fee:acquiring:EUR              -€0.60
+  贷  customer:abc:available:EUR             +€0.60
+
+  借  customer:abc:reserve:rolling:EUR       -€2.00
+  贷  customer:abc:available:EUR             +€2.00
+```
+
+若 USD 也只有 $10：先扣光 $10，剩余缺口打在 `available:USD` 为负，EUR 不负。
 
 ## 与既有 ADR
 
-- ADR 0001：资金来源、负余额、滚动 HELD 才退、固定不退 — 仍有效。金额改用请款校验、即期入账，滚动按请款比例。
-- ADR 0002：扣除顺序仍是 MDR → 滚动 → 固定。百分比基数改为入账金额；固定目标在主币种。
+- ADR 0001：覆盖口径含 pending + 主币种 fallback；实扣 available:S 再 available:primary；reserve 不参与。滚动 HELD 才退、固定不退。
+- ADR 0002：扣除顺序仍是 MDR → 滚动 → 固定。百分比基数为入账金额；固定目标在主币种；升级仅 primary 同币直转。
 - ADR 0003：费率锁在 CAPTURE 日、退款仅 SETTLED 后、MDR 退 / 按笔费不退 — 仍有效。跨币种折算见本文。
