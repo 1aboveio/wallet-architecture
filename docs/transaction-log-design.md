@@ -1,5 +1,7 @@
 # 流水账设计（Transaction Log Design）
 
+流水与账本分离见 [ADR 0005](adr/0005-ledger-invariants.md) 不变量 10。
+
 ## 概述
 
 支付系统需要两套记录，各司其职：

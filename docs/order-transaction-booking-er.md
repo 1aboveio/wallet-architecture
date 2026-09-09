@@ -1,5 +1,7 @@
 # Order - Transaction - Balance Movement - Ledger Entry 关系图
 
+状态机见 [ADR 0003](adr/0003-transaction-status-model.md)。账本不变量见 [ADR 0005](adr/0005-ledger-invariants.md)。
+
 ## 分层模型
 
 ```

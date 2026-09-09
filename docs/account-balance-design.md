@@ -1,5 +1,7 @@
 # 账户体系与余额设计（Account & Balance Design）
 
+不变量见 [ADR 0005](adr/0005-ledger-invariants.md)。下文是命名与缓存实现。
+
 ## 设计原则
 
 1. **客户 ID 嵌入账户名** — 每个客户有独立账户，物理隔离，不可能串户
