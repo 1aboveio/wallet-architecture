@@ -27,7 +27,7 @@ CAPTURE 换汇只决定当时怎么把请款金额写成入账金额。退款买
 
 | 做法 | 分录 | 结论 |
 |---|---|---|
-| **采用：折成结算币种扣** | `available:EUR -€0.09`，收入记 EUR | 和这笔资金同一条腿；EUR-only 商户不必先有 USD |
+| **采用：折成结算币种扣** | CAPTURE 时从 **pending:EUR** 扣 €0.09，收入记 EUR | 和这笔资金同一条腿；EUR-only 商户不必先有 USD |
 | 不用：扣主币种钱包 | `available:USD -$0.10` | USD 没余额就变负；退款不退按笔费时 USD 缺口一直在 |
 
 退款手续费同一规则：主币种标价，扣该笔结算钱包。
@@ -40,7 +40,8 @@ CAPTURE 换汇只决定当时怎么把请款金额写成入账金额。退款买
   → 按笔费（主币种标价，折结算币种，扣结算钱包）
   → 滚动保证金（入账金额 × 比率，settlement_currency）
   → 固定保证金（折主币种，受目标差额与剩余封顶）
-  → 结算净额 → available:{settlement_currency}
+  → 结算净额 → pending:{settlement_currency}（不可提现）
+SETTLED：pending 净额 → available:{settlement_currency}
 ```
 
 结算币种 = 请款币种 ∈ 开通集 ? 请款币种 : 主币种。

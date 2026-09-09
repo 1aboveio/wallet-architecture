@@ -18,6 +18,8 @@
 | [ADR 0003](docs/adr/0003-transaction-status-model.md) | 状态机；SETTLED 是下游退款闸门 |
 | [ADR 0004](docs/adr/0004-multi-currency-clearing.md) | 多币种清分、CAPTURE 换汇、退款即期 |
 | [ADR 0005](docs/adr/0005-ledger-invariants.md) | 钱包隔离、冻结即账户、分币种平衡 |
+| [ADR 0006](docs/adr/0006-chart-of-accounts.md) | 科目：clearing 在途 + customer 负债 |
+| [ADR 0007](docs/adr/0007-quote-and-reporting.md) | 报价契约；报表按报表日折主币种 |
 | [分录手册](docs/journals/) | 收单 / 保证金 / 收款 / 换汇 / 提现 / 冻结 |
 | [PRD](docs/prd/prd-payment-ledger.md) | 产品需求 |
 
@@ -26,7 +28,7 @@
 | 文档 | 说明 |
 |------|------|
 | [账户与余额](docs/account-balance-design.md) | 命名、缓存、乐观锁、对账 |
-| [科目双视角](docs/chart-of-accounts-dual.md) | receivable vs clearing（尚未选定） |
+| [科目双视角](docs/chart-of-accounts-dual.md) | 对照稿；规范名见 ADR 0006 |
 | [Order / Transaction / Movement](docs/order-transaction-booking-er.md) | 实体关系 |
 | [流水账](docs/transaction-log-design.md) | 六类流水表 |
 | [行业引用](docs/industry-references.md) | 外部资料 |
@@ -41,7 +43,7 @@
 | 2 | 账户命名 | 客户 ID 嵌入账户名（ADR 0005） |
 | 3 | 冻结 | 账户 `frozen_hold`，非状态（ADR 0005） |
 | 4 | 上下游 | 两本独立的账（ADR 0005） |
-| 5 | 退款 | SETTLED 或未退完的 REFUNDED 从 available 扣；之前 VOID（ADR 0003） |
+| 5 | 出金 / 退款 / 争议 | SETTLED 前净额在 pending、不可提现。退款与 DISPUTED 都须已 SETTLED（ADR 0003） |
 | 6 | 保证金 | 滚动按入账、到期释放；固定在主币种、手动释放（ADR 0002） |
 | 7 | 负余额 | 先结算钱包再主币种；同币种后续收入抵扣（ADR 0001） |
 | 8 | 余额 | 缓存 + 乐观锁；账本为真相源（ADR 0005） |

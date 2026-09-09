@@ -19,19 +19,23 @@
 | 结算净额 | $91.20 |
 
 ```
-── CAPTURE ──
-  借  receivable:txn:USD                     +$100.00
+── CAPTURE 清分（净额留 pending，不可提现）──
+  借  clearing:acquiring:USD                 +$100.00
   贷  customer:abc:pending:USD               +$100.00
 
-  借  customer:abc:pending:USD               -$100.00
-  贷  customer:abc:available:USD             +$91.20
+  借  customer:abc:pending:USD               -$8.80
   贷  customer:abc:reserve:rolling:USD       +$5.00
   贷  customer:abc:reserve:fixed:USD         +$2.00
   贷  revenue:fee:acquiring:USD              +$1.50
   贷  revenue:fee:per_item:USD               +$0.30
+  pending 余 $91.20
+
+── SETTLED（可提现、可退款）──
+  借  customer:abc:pending:USD               -$91.20
+  贷  customer:abc:available:USD             +$91.20
 ```
 
-退 $30（同币种，refund_fx_rate = 1，无汇差）：扣 $30，退 MDR $0.45，退滚动 $1.50。
+退 $30（须 SETTLED；同币种无汇差）：扣 available $30，退 MDR $0.45，退滚动 $1.50。
 
 ---
 
@@ -48,17 +52,20 @@
 | 结算净额 | | $100.55 |
 
 ```
-── CAPTURE 换汇入账 ──
-  借  receivable:txn:USD                     +$110.00
+── CAPTURE 换汇入账 + 清分（净额留 pending）──
+  借  clearing:acquiring:USD                 +$110.00
   贷  customer:abc:pending:USD               +$110.00
 
-── CAPTURE 清分 ──
-  借  customer:abc:pending:USD               -$110.00
-  贷  customer:abc:available:USD             +$100.55
+  借  customer:abc:pending:USD               -$9.45
   贷  customer:abc:reserve:rolling:USD       +$5.50
   贷  customer:abc:reserve:fixed:USD         +$2.00
   贷  revenue:fee:acquiring:USD              +$1.65
   贷  revenue:fee:per_item:USD               +$0.30
+  pending 余 $100.55
+
+── SETTLED ──
+  借  customer:abc:pending:USD               -$100.55
+  贷  customer:abc:available:USD             +$100.55
 ```
 
 上游若清算 EUR，另记，不进商户净额。`payable:acquirer:{ccy}` = 应付通道费用（ADR 0005）：
@@ -74,7 +81,7 @@
 
 ```
   借  customer:abc:available:USD             -$36.00
-  贷  receivable:txn:USD                     -$36.00
+  贷  clearing:acquiring:USD                 -$36.00
 
   借  revenue:fee:acquiring:USD              -$0.50
   贷  customer:abc:available:USD             +$0.50
@@ -101,11 +108,14 @@
 | 按笔费 | 标价 $0.30 → **扣 EUR €0.27**，不扣 USD 账户 |
 | 滚动 | €5.00，`reserve:rolling:EUR` |
 | 固定 | $2.00 ← 从 EUR 扣 €1.82 换入 `reserve:fixed:USD` |
-| 结算净额 | €91.41 → `available:EUR` |
+| 结算净额 | €91.41 → SETTLED 前在 `pending:EUR` |
 
 ```
-  借  customer:abc:pending:EUR               -€100.00
-  贷  customer:abc:available:EUR             +€91.41
+── CAPTURE ──
+  借  clearing:acquiring:EUR                 +€100.00
+  贷  customer:abc:pending:EUR               +€100.00
+
+  借  customer:abc:pending:EUR               -€8.59
   贷  customer:abc:reserve:rolling:EUR       +€5.00
   贷  revenue:fee:acquiring:EUR              +€1.50
   贷  revenue:fee:per_item:EUR               +€0.27
@@ -113,9 +123,14 @@
 
   借  clearing:fx:EUR_USD                    +$2.00
   贷  customer:abc:reserve:fixed:USD         +$2.00
+  pending 余 €91.41
+
+── SETTLED ──
+  借  customer:abc:pending:EUR               -€91.41
+  贷  customer:abc:available:EUR             +€91.41
 ```
 
-EUR rolling **不能**升级成 USD 固定，到期释放进 `available:EUR`。
+EUR rolling **不能**升级成 USD 固定，到期释放进 `available:EUR`（须已 SETTLED，或释放进 pending 再随 SETTLED 转）。
 
 ---
 
@@ -130,7 +145,7 @@ EUR rolling **不能**升级成 USD 固定，到期释放进 `available:EUR`。
 ```
   借  customer:abc:available:EUR             -€10.00
   借  customer:abc:available:USD             -$36.00
-  贷  receivable:txn:EUR                     -€40.00
+  贷  clearing:acquiring:EUR                 -€40.00
   贷  clearing:fx:EUR_USD                    -€30.00
   借  clearing:fx:EUR_USD                    +$36.00
 
@@ -182,7 +197,7 @@ MDR = THB 3,500 × 1.5% 再折 USD，**不要** $100 × 1.5%。
 
 ```
   借  customer:abc:available:USD             -$30.00
-  贷  receivable:txn:USD                     -$30.00
+  贷  clearing:acquiring:USD                 -$30.00
 
   借  revenue:fee:acquiring:USD              -$0.30
   贷  customer:abc:available:USD             +$0.30
@@ -194,3 +209,24 @@ MDR = THB 3,500 × 1.5% 再折 USD，**不要** $100 × 1.5%。
 净：available −$28.20。
 
 滚动已 RELEASED / RESERVE_RELEASED：无第三条。固定保证金：永不退。
+
+---
+
+## H. 争议（须已 SETTLED）
+
+不能从 CAPTURED 进入。进行中从 available 冻争议额；败诉先扣该笔滚动 HELD，再 frozen_hold，再 available，再主币种。不退 MDR。
+
+```
+── DISPUTED ──
+  借  customer:abc:available:USD             -$30.00
+  贷  customer:abc:frozen_hold:USD           +$30.00
+
+── DISPUTE_WON ──
+  借  customer:abc:frozen_hold:USD           -$30.00
+  贷  customer:abc:available:USD             +$30.00
+
+── DISPUTE_LOST（滚动仍 HELD $5 先顶）──
+  借  customer:abc:reserve:rolling:USD       -$5.00
+  借  customer:abc:frozen_hold:USD           -$30.00
+  贷  clearing:acquiring:USD                 -$35.00
+```

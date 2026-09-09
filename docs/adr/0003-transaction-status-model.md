@@ -33,8 +33,11 @@ Transaction 表直接存储渠道（acquirer）返回的状态，平台不做过
 | INIT | 交易创建，尚未提交 | 交易初始化 |
 | PAYING | 已提交到 acquirer，等待响应 | 发起支付请求 |
 | PAID | 授权成功，资金冻结（= 传统收单的 AUTHORIZED） | acquirer 返回授权成功 |
-| CAPTURED | 请款成功；下游清分完成，净额已入 available | 系统 capture 成功 |
-| SETTLED | **下游**商户结算批次完成；退款闸门打开 | 平台下游批次完成。不是收单行到账 |
+| CAPTURED | 请款成功；清分完成，**结算净额留在 pending**，不可提现 | 系统 capture 成功 |
+| SETTLED | 下游批次完成：pending 净额转入 available；退款闸门打开 | 平台下游结算。不是收单行到账 |
+| DISPUTED | 争议/拒付进行中 | 只从 SETTLED / REFUNDED 进入，不能从 CAPTURED |
+| DISPUTE_WON | 争议胜诉 | 解冻争议金额 |
+| DISPUTE_LOST | 争议败诉 | 从冻结/滚动/钱包扣败诉额 |
 | CANCELED | Auth Reversal | capture 前取消 |
 | VOIDED | Capture Reversal | CAPTURED 之后、SETTLED 之前撤销 |
 | REFUNDED | 部分退款，**可继续退** | 从 SETTLED 或 REFUNDED 发起 |
@@ -44,12 +47,13 @@ Transaction 表直接存储渠道（acquirer）返回的状态，平台不做过
 
 ```
 INIT → PAYING → PAID → CAPTURED → SETTLED → REFUNDED → REFUNDED_FULL
-                 ↘ CANCELED
-                          ↘ VOIDED
+                 ↘ CANCELED               ↘ DISPUTED → DISPUTE_WON
+                          ↘ VOIDED                     ↘ DISPUTE_LOST
 ```
 
-CANCELED 只从 PAID 分叉；VOIDED 只从 CAPTURED 分叉。二者不是前后顺序。
-上游收单行打款记 Balance Movement `SETTLEMENT`，**不**占用 `Transaction.SETTLED`。
+CANCELED 只从 PAID；VOIDED 只从 CAPTURED（SETTLED 前）。
+DISPUTED 只从 SETTLED / REFUNDED 进入，不能从 CAPTURED。SETTLED 前的通道争议走 VOID 或上游调账。
+上游收单行打款记 Movement `SETTLEMENT`，不占用 `Transaction.SETTLED`。
 
 ---
 
@@ -101,6 +105,7 @@ Order 区分类型：SALE（收款）和 REFUND（退款）。REFUND 类型通�
 | VOIDED | CANCELLED |
 | REFUNDED | REFUNDED |
 | REFUNDED_FULL | REFUNDED |
+| DISPUTED | COMPLETED 或 REFUNDED |
 
 ---
 
@@ -153,6 +158,17 @@ Capture 是系统侧操作（对 acquirer 的 API 调用），不需要让用户
 
 1. **业务灵活** — 支持多次部分退款，满足复杂退款场景
 2. **状态明确** — REFUNDED_FULL 明确标识"已退完"，避免重复退款校验
+
+## 决策 5b：争议与退款分开
+
+拒付/争议不是退款。退款是商户发起；争议是发卡行/卡组发起。**必须已经 SETTLED**（或已部分退款的 REFUNDED）才能进 `DISPUTED`。CAPTURED、钱还在 pending 时不走争议态。
+
+- **进行中：** 按争议请款金额折结算币，从 **available** 划入 `frozen_hold`。不退 MDR、不退按笔费。
+- **胜诉：** 冻结划回原账户。
+- **败诉：** 先用该笔滚动 HELD，再扣 `frozen_hold`，再 `available:{S}`，再主币种兜底。滚动是拿来挡拒付的，败诉不退给商户。
+- 可另扣争议手续费（主币种标价，扣法同按笔费）。
+
+分录见 [journals/acquiring.md](../journals/acquiring.md) 节 H。
 
 ## 决策 6：费率按 CAPTURE 日期生效
 
@@ -244,7 +260,7 @@ Transaction: PAID → CAPTURED
 
 渠道返回码写入 `channel_raw_status`。平台 `Transaction.status` 用上表枚举。`SETTLED` 专指**下游商户结算完成**，不是 acquirer 银行到账。
 
-上游到账：Balance Movement 类型 `SETTLEMENT`（`house:bank` / `receivable:txn`），与能否退款无关。
+上游到账：Balance Movement 类型 `SETTLEMENT`（`house:bank` / `clearing:acquiring`），与能否退款无关。
 
 ## 决策 10：Order 区分 SALE 和 REFUND
 

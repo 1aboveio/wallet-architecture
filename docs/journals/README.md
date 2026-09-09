@@ -4,7 +4,7 @@
 
 | 文件 | 覆盖 | 对应 ADR |
 |---|---|---|
-| [acquiring.md](acquiring.md) | CAPTURE 清分、退款、VOID、多币种 | 0001 / 0003 / 0004 |
+| [acquiring.md](acquiring.md) | CAPTURE 清分（净额留 pending）、SETTLED、退款、VOID、多币种 | 0001 / 0003 / 0004 |
 | [reserve.md](reserve.md) | 固定/滚动扣除、充值、释放、升级 | 0002 / 0004 |
 | [collection.md](collection.md) | 收款入账 | 0005 |
 | [fx.md](fx.md) | 换汇（分币种平衡） | 0005 |

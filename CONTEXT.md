@@ -23,8 +23,8 @@ _Avoid_: 结算币毛额, 毛额, GTV, 结算原额, 原单金额, settlement_gr
 _Avoid_: 入账币种（不单列）, payout_currency
 
 **结算净额 (net_settlement_amount)**:
-入账金额减去 MDR、按笔费、滚动保证金、固定保证金之后，记入 available 的金额。
-_Avoid_: 商户实收（可作口语，不作字段）, net_payout
+入账金额减去 MDR、按笔费、滚动、固定之后的金额。CAPTURE 后记在 `pending`；`SETTLED` 后才转入 `available`。SETTLED 前不可提现。
+_Avoid_: 商户实收（口语）, net_payout
 
 **主币种 (primary_currency)**:
 商户主币。允许集由主体地区限制（香港 ∈ {HKD, USD}）。按笔费与固定保证金按它标价；请款币种未开通时作为该笔结算币种。
@@ -41,6 +41,10 @@ _Avoid_: 锁汇, capture_fx_rate, locked_rate
 **退款汇率 (refund_fx_rate)**:
 退款时**请款币种 → 结算币种**。优先用通道该笔退款汇率，否则用退款时牌价。只用于算 `refund_booking_amount`。结算币种已等于请款币种时为 1。
 _Avoid_: booking_fx_rate, 拿它做结算币→主币种的兜底
+
+**报表汇率 (report_fx_rate)**:
+把各币种余额/收入折成主币种做报表时用的汇率。取**报表日**（UTC 日终）牌价，不回溯入账汇率。与入账时的差记翻译损益，接受波动。
+_Avoid_: 用 booking_fx_rate 重报历史 P&L
 
 **兜底汇率 (fallback_fx_rate)**:
 退款实扣时**结算币种 → 主币种**的即期（同通道本笔退款价）。结算钱包不够、要从 `available:{primary}` 补洞时用它。两币种相同则为 1。

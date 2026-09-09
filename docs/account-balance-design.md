@@ -20,7 +20,7 @@
 | 账户 | 说明 |
 |------|------|
 | `customer:{id}:available:{ccy}` | 可用余额，可提现、换汇、付款 |
-| `customer:{id}:pending:{ccy}` | CAPTURE 清分用的过渡账户；清分完成后为 0。不是「等到 T+7 才进 available」 |
+| `customer:{id}:pending:{ccy}` | CAPTURE 清分后的结算净额。SETTLED 前不可提现；SETTLED 时转入 available |
 | `customer:{id}:frozen_hold:{ccy}` | 冻结预留，风控冻结的 pending 资金 |
 | `customer:{id}:reserve:fixed:{ccy}` | 固定保证金，手动释放到 available |
 | `customer:{id}:reserve:rolling:{ccy}` | 滚动保证金，N 天后自动释放到 available |
