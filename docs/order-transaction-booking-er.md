@@ -145,12 +145,12 @@
 ### Transaction（渠道状态）
 
 ```
-INIT → PAYING → PAID → CAPTURED → SETTLED
-               ↘ CANCELED        ↘ REFUNDED
-                        ↘ VOIDED ↗ REFUNDED_FULL
+INIT → PAYING → PAID → CAPTURED → SETTLED → REFUNDED → REFUNDED_FULL
+                 ↘ CANCELED
+                          ↘ VOIDED
 ```
 
-**注：** Transaction.status 直接存储渠道（acquirer）返回的状态，平台不做过滤或映射。
+CANCELED 从 PAID 分叉；VOIDED 从 CAPTURED 分叉。`SETTLED` 是下游商户结算完成（ADR 0003），不是上游到账。
 
 ### Order（业务状态）
 
@@ -188,7 +188,8 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
 |---------------------|---------------|------------------|
 | PAID (AUTHORIZED) | CONFIRMED | — |
 | CAPTURED | COMPLETED | COLLECTION + FEE + RESERVE |
-| SETTLED | 仍为 COMPLETED | SETTLEMENT（上游到账确认，可无金额） |
+| SETTLED | COMPLETED | 无额外商户分录（清分已在 CAPTURE） |
+| （上游到账） | — | SETTLEMENT（house:bank / receivable，与 SETTLED 无关） |
 | CANCELED | CANCELLED | — |
 | VOIDED | CANCELLED | VOID（冲 CAPTURE 原分录） |
 | REFUNDED | REFUNDED | REFUND |

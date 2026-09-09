@@ -4,7 +4,7 @@
 
 ## 设计原则
 
-退款校验的核心目标：**防止资损**。确保每一笔退款都有对应的资金来源，不会出现平台垫款或商户超额退款的情况。
+退款校验的核心目标：**防止超额退款和挪用 reserve**。资金不足时允许商户负余额（平台短期敞口），由后续同币种收入追偿，不拒绝退款。
 
 ## 核心决策
 
@@ -51,10 +51,10 @@ IF refund_presentment_amount > 退款可执行金额
 ### 规则 2：交易状态校验
 
 ```
-允许状态: SETTLED
+允许状态: SETTLED / REFUNDED（未退完，可继续部分退）
 拒绝状态: INIT / PAYING / PAID / CAPTURED / CANCELED / VOIDED / REFUNDED_FULL
 
-IF transaction.status != SETTLED
+IF status not in (SETTLED, REFUNDED)
   → REJECT "INVALID_TRANSACTION_STATUS"
 ```
 
@@ -148,7 +148,7 @@ T+10 发起退款 $30
 
 退款来源: available（已结算）
   借  customer:abc:available:USD   -$30.00
-  贷  receivable:txn:USD           +$30.00
+  贷  receivable:txn:USD           -$30.00
 
   借  customer:abc:reserve:rolling:USD  -$1.50
   贷  customer:abc:available:USD        +$1.50

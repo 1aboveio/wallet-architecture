@@ -58,7 +58,7 @@ sequenceDiagram
     Acq->>PF: 到账通知 + 结算明细
     Note over PF: 银行到账 $97.50<br>逐笔对账匹配 Capture
 
-    Note over PF: 记账分录:<br>借: 银行账户 +$97.50<br>借: 卡组织费用 -$1.50<br>借: 收单行费用 -$1.00<br>贷: 应收收单行 -$100
+    Note over PF: 上游 SETTLEMENT（非 Transaction.SETTLED）:<br>借 house:bank:USD +$97.50<br>借 expense:card_network_fee:USD +$1.50<br>借 expense:acquirer_fee:USD +$1.00<br>贷 receivable:txn:USD -$100
 
     box rgb(255,230,255) ④ SETTLE PF → 商户
     end

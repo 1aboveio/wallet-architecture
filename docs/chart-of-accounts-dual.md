@@ -104,13 +104,13 @@
   借  expense:acquirer_fee                +$1.00     (收单行费用)
   贷  receivable:txn:USD                  -$100.00   (应收清零)
 
-── T+7 结算给商户 ────────────────────────────
+── T+0 清分（费用此时入账）──────────────────
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
   贷  customer:abc:reserve:fixed:USD      +$3.00
   贷  customer:abc:reserve:rolling:USD    +$2.00
-  贷  revenue:fee:acquiring               +$1.00
+  贷  revenue:fee:acquiring:USD           +$1.00
 ```
 
 #### 方案 B：支付行业视角
@@ -128,13 +128,13 @@
   借  expense:acquirer_fee                +$1.00     (收单行费用)
   贷  clearing:acquiring:USD              -$100.00   (过渡清零)
 
-── T+7 结算给商户 ────────────────────────────
+── T+0 清分（费用此时入账）──────────────────
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
   贷  customer:abc:reserve:fixed:USD      +$3.00
   贷  customer:abc:reserve:rolling:USD    +$2.00
-  贷  revenue:fee:acquiring               +$1.00
+  贷  revenue:fee:acquiring:USD           +$1.00
 ```
 
 ---

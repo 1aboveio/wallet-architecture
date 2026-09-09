@@ -63,7 +63,7 @@ S = primary 时没有第 2 步。滚动保证金退回仍贷 `available:{S}`。
 | 2 | 已结算 | 滚动 | RELEASED / RESERVE_RELEASED | available | ❌ 不退回 | ✅ |
 | 3 | 已结算 | 固定 | — | available | ❌ 不退回 | ✅ |
 
-**注：** 退款只能在 SETTLED 之后发起（见 ADR 0003），settlement 前的撤销走 VOIDED 流程。
+**注：** 退款从 `SETTLED` 或未退完的 `REFUNDED` 发起（ADR 0003）。SETTLED 前撤销走 VOIDED。
 
 ## 退款校验规则
 

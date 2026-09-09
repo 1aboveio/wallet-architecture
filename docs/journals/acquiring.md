@@ -61,7 +61,7 @@
   贷  revenue:fee:per_item:USD               +$0.30
 ```
 
-上游若清算 EUR，另记，不进商户净额：
+上游若清算 EUR，另记，不进商户净额。`payable:acquirer:{ccy}` = 应付通道费用（ADR 0005）：
 
 ```
   借  expense:card_network_fee:EUR           +€1.20

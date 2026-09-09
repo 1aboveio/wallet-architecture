@@ -8,7 +8,7 @@
 
 1. **一个钱包，按币种分账。** 每个余额账户恰好一个 `{ccy}`。禁止在同一账户里混币。
 2. **账户名嵌入归属。** `customer:{id}:{role}:{ccy}`。客户 ID 在路径里，物理隔离，不能靠字段过滤防串户。
-3. **客户资金是负债。** `available` / `pending` / `frozen_hold` / `reserve:fixed` / `reserve:rolling` / `special_account`。平台银行是资产 `house:bank:{ccy}`。
+3. **客户资金是负债。** `available` / `pending` / `frozen_hold` / `reserve:fixed` / `reserve:rolling` / `special_account`。平台银行是资产 `house:bank:{ccy}`。应付通道费用是 `payable:acquirer:{ccy}`。
 4. **冻结是账户，不是状态。** 冻：从资金所在账户（pending 或 available）转入 `frozen_hold`；解冻：转回 available（或仍待结则回 pending）。必须有借贷，不能只打标。
 5. **有余额的科目都带币种。** 含 `revenue:fee:*:{ccy}`、`expense:*:{ccy}`。跨币种只允许走显式换汇过渡（`clearing:fx:{from}_{to}`）。
 

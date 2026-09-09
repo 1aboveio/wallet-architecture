@@ -18,7 +18,7 @@
 - **账本层**：不可变的双重记账分录，作为余额计算的唯一真相源
 - **流水账层**：业务事件记录，与账本通过 reference_id 关联
 - **余额层**：缓存余额 + 乐观锁 + 定期对账，支持 O(1) 查询
-- **保证金层**：固定保证金与滚动保证金并存，支持累计、释放、升级、退款退回
+- **保证金层**：固定与滚动并存；累计、释放、滚动升级；仅滚动 HELD 随退款退回
 - **退款层**：仅 SETTLED 后退款；主币种兜底与负余额（ADR 0001 / 0003）
 
 ## User Stories
@@ -125,9 +125,10 @@
   house:bank:{ccy}           (Asset)
   receivable:txn:{ccy}       (Asset)
   revenue:fee:acquiring:{ccy} (Revenue)
-  expense:refund             (Expense)
-  expense:card_network_fee   (Expense)
-  expense:acquirer_fee       (Expense)
+  expense:refund:{ccy}            (Expense)
+  expense:card_network_fee:{ccy}  (Expense)
+  expense:acquirer_fee:{ccy}      (Expense)
+  payable:acquirer:{ccy}          (Liability)
 ```
 
 ### 上下游独立

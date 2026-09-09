@@ -21,12 +21,13 @@
 | `house:bank:{ccy}` | Asset | 平台银行账户 |
 | `receivable:txn:{ccy}` | Asset | 应收交易款 |
 | `revenue:fee:acquiring:{ccy}` | Revenue | MDR 收入 |
-| `revenue:fee:fx` | Revenue | 换汇价差收入 |
+| `revenue:fee:fx:{ccy}` | Revenue | 换汇价差收入 |
+| `payable:acquirer:{ccy}` | Liability | 应付通道费用 |
 | `revenue:fee:collection` | Revenue | 收款手续费收入 |
 | `revenue:fee:payout` | Revenue | 付款手续费收入 |
-| `expense:refund` | Expense | 退款支出 |
-| `expense:card_network_fee` | Expense | 卡组织通道费 |
-| `expense:acquirer_fee` | Expense | 收单行费用 |
+| `expense:refund:{ccy}` | Expense | 退款支出 |
+| `expense:card_network_fee:{ccy}` | Expense | 卡组织通道费 |
+| `expense:acquirer_fee:{ccy}` | Expense | 收单行费用 |
 | `clearing:collection:{ccy}` | Clearing | 收款过渡（银行已收未入钱包） |
 | `clearing:payout:{ccy}` | Clearing | 提现过渡（钱包已扣未到银行） |
 | `clearing:fx:{from}_{to}` | Clearing | 换汇过渡 |
@@ -67,7 +68,7 @@
 ── 扣减源币种余额 ─────────────────────────────────────
 
   借  customer:abc:available:USD          -$500.00
-  贷  clearing:fx:USD_EUR                 +$500.00
+  贷  clearing:fx:USD_EUR:USD             +$500.00
 
 ── 入账目标币种余额 ───────────────────────────────────
 
@@ -75,9 +76,13 @@
   平台价差: €460 × 0.3% = €1.38
   客户实得: €460 - €1.38 = €458.62
 
-  借  clearing:fx:USD_EUR                 -$500.00
+  USD 腿（与上一组平衡）:
+  借  clearing:fx:USD_EUR:USD             -$500.00
+
+  EUR 腿:
+  借  clearing:fx:USD_EUR:EUR             +€460.00
   贷  customer:abc:available:EUR          +€458.62
-  贷  revenue:fee:fx                      +€1.38
+  贷  revenue:fee:fx:EUR                  +€1.38
 
 ── 银行端实际换汇 ─────────────────────────────────────
 
@@ -305,84 +310,50 @@
 场景：商户 available = -$6，新交易结算 $94
 
 ```
-── 新交易结算 ─────────────────────────────────────────
+── 新交易清分（只记正常净额；负余额不是第二条分录）──
 
   借  customer:abc:pending:USD            -$94.00
-  贷  customer:abc:available:USD          +$88.36    ← $94 - 费用 - 保证金 - 负余额抵扣
-  贷  customer:abc:reserve:fixed:USD      +$2.82     ← 固定保证金 $94 × 3%
-  贷  customer:abc:reserve:rolling:USD    +$1.88     ← 滚动保证金 $94 × 2%
-  贷  revenue:fee:acquiring:USD           +$0.94     ← 服务费
-
-  负余额抵扣逻辑:
-    理论入账 = $94 - $0.94 - $2.82 - $1.88 = $88.36
-    负余额 = -$6
-    实际入账 = $88.36 - $6 = $82.36
-
-  修正分录:
-  借  customer:abc:pending:USD            -$94.00
-  贷  customer:abc:available:USD          +$82.36    ← 抵扣负余额后
-  贷  customer:abc:reserve:fixed:USD      +$2.82
-  贷  customer:abc:reserve:rolling:USD    +$1.88
-  贷  revenue:fee:acquiring:USD           +$0.94
-  贷  customer:abc:available:USD          +$6.00     ← 负余额冲回（贷方增加）
-
-  等效于:
-  借  customer:abc:pending:USD            -$94.00
-  贷  customer:abc:available:USD          +$88.36    ← 正常结算金额
+  贷  customer:abc:available:USD          +$88.36
   贷  customer:abc:reserve:fixed:USD      +$2.82
   贷  customer:abc:reserve:rolling:USD    +$1.88
   贷  revenue:fee:acquiring:USD           +$0.94
 
-  然后负余额自动抵扣:
-    available: -$6 + $88.36 = $82.36
+  缓存: available 从 -$6 变为 -$6 + $88.36 = $82.36。不要再贷一笔「负余额冲回」。
 ```
 
 ---
 
 ## 九、汇总：收单全流程（含退款+冻结+保证金释放）
 
-场景：客户 abc，请款 $100，退款 $30（SETTLED 后），冻结 $20，MDR 1%，保证金 5%。扣费时点以 journals 为准（CAPTURE 清分）；本节冻结穿插仅为示意。
+场景：请款 $100，CAPTURE 清分后冻结 $20，SETTLED 后退 $30。MDR 1%，保证金 5%。
 
 ```
-── T+0 Capture ────────────────────────────────────────
+── T+0 Capture 请款 + 清分 ────────────────────────────
 
   借  receivable:txn:USD                  +$100.00
   贷  customer:abc:pending:USD            +$100.00
 
-  pending: $100
-
-── T+2 上游结算 ───────────────────────────────────────
-
-  借  house:bank:USD                      +$97.50
-  借  expense:card_network_fee            +$1.50
-  借  expense:acquirer_fee                +$1.00
-  贷  receivable:txn:USD                  -$100.00
-
-── T+5 风控冻结 $20 ───────────────────────────────────
-
-  借  customer:abc:pending:USD            -$20.00
-  贷  customer:abc:frozen_hold:USD        +$20.00
-
-  pending: $80
-  frozen_hold: $20
-
-── T+7 结算 ───────────────────────────────────────────
-
-  实际结算金额 = pending = $80
-  保证金 = $100 × 5% = $5.00（固定 $3 + 滚动 $2）
-  服务费 = $100 × 1% = $1.00
-
-  借  customer:abc:pending:USD            -$80.00
-  贷  customer:abc:available:USD          +$74.00
+  借  customer:abc:pending:USD            -$100.00
+  贷  customer:abc:available:USD          +$94.00
   贷  customer:abc:reserve:fixed:USD      +$3.00
   贷  customer:abc:reserve:rolling:USD    +$2.00
   贷  revenue:fee:acquiring:USD           +$1.00
 
-  pending: $0
-  available: $74.00
-  reserve:fixed: $3.00
-  reserve:rolling: $2.00
-  frozen_hold: $20（仍未解冻）
+  pending $0；available $94
+
+── T+2 上游到账（与 SETTLED / 退款闸门无关）───────────
+
+  借  house:bank:USD                      +$97.50
+  借  expense:card_network_fee:USD        +$1.50
+  借  expense:acquirer_fee:USD            +$1.00
+  贷  receivable:txn:USD                  -$100.00
+
+── T+5 从 available 冻结 $20 ──────────────────────────
+
+  借  customer:abc:available:USD          -$20.00
+  贷  customer:abc:frozen_hold:USD        +$20.00
+
+── T+7 SETTLED：无商户分录 ────────────────────────────
 
 ── T+8 解冻 $20 ───────────────────────────────────────
 
@@ -432,7 +403,7 @@
 
   资金流向:
     买家付 $100 → 卡组织扣 $2.50 → PF 银行到账 $97.50
-    PF 结算给商户 $74.00 + 解冻 $20 + 滚动释放 $1.40 = $95.40
+    CAPTURE 清分净额 $94 入 available；解冻不改变净额；滚动释放 $1.40
     退款 $30 从商户 available 扣减（含滚动保证金退回 $0.60）
     PF 留下 $0.70 MDR（退款已退 $0.30）
 ```

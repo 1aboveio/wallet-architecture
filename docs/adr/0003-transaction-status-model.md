@@ -33,20 +33,23 @@ Transaction 表直接存储渠道（acquirer）返回的状态，平台不做过
 | INIT | 交易创建，尚未提交 | 交易初始化 |
 | PAYING | 已提交到 acquirer，等待响应 | 发起支付请求 |
 | PAID | 授权成功，资金冻结（= 传统收单的 AUTHORIZED） | acquirer 返回授权成功 |
-| CAPTURED | Capture 确认，资金归属到平台 | 系统执行 capture 成功 |
-| SETTLED | 结算完成，资金归属到商户 | 结算批次处理完成 |
-| CANCELED | Auth Reversal，撤销授权 | capture 前发起取消 |
-| VOIDED | Capture Reversal，撤销 capture | settlement 前发起撤销 |
-| REFUNDED | 部分退款，可继续退 | 从 SETTLED 发起部分退款 |
-| REFUNDED_FULL | 全额退款，终态 | 从 SETTLED 发起全额退款 |
+| CAPTURED | 请款成功；下游清分完成，净额已入 available | 系统 capture 成功 |
+| SETTLED | **下游**商户结算批次完成；退款闸门打开 | 平台下游批次完成。不是收单行到账 |
+| CANCELED | Auth Reversal | capture 前取消 |
+| VOIDED | Capture Reversal | CAPTURED 之后、SETTLED 之前撤销 |
+| REFUNDED | 部分退款，**可继续退** | 从 SETTLED 或 REFUNDED 发起 |
+| REFUNDED_FULL | 全额退款，终态 | 从 SETTLED 或 REFUNDED 退完 |
 
 ### 状态流转图
 
 ```
-INIT → PAYING → PAID → CAPTURED → SETTLED → REFUNDED (部分，可继续退)
-               ↘ CANCELED                      ↘ REFUNDED_FULL (全额，终态)
-                        ↘ VOIDED
+INIT → PAYING → PAID → CAPTURED → SETTLED → REFUNDED → REFUNDED_FULL
+                 ↘ CANCELED
+                          ↘ VOIDED
 ```
+
+CANCELED 只从 PAID 分叉；VOIDED 只从 CAPTURED 分叉。二者不是前后顺序。
+上游收单行打款记 Balance Movement `SETTLEMENT`，**不**占用 `Transaction.SETTLED`。
 
 ---
 
@@ -133,7 +136,7 @@ Capture 是系统侧操作（对 acquirer 的 API 调用），不需要让用户
 
 ## 决策 4：退款只能从 SETTLED 发起
 
-退款（REFUNDED / REFUNDED_FULL）只能从 `SETTLED` 状态进入，不能从 `CAPTURED`。
+退款只能从 `SETTLED` 或 `REFUNDED`（未退完）进入，不能从 `CAPTURED`。全额后退入 `REFUNDED_FULL`。
 
 ### 理由
 
@@ -227,7 +230,8 @@ Transaction: PAID → CAPTURED
 |------|------|------|
 | CAPTURE | 实时 | 交易扣款确认 |
 | Clearing | 实时（CAPTURE 时） | 费用计算，生成 Balance Movement |
-| Settlement | T+1/T+2（acquirer 周期） | acquirer 资金到账 |
+| 上游 SETTLEMENT movement | T+1/T+2 | acquirer 资金到账，不是 Transaction.SETTLED |
+| Transaction.SETTLED | 下游批次 | 退款闸门；不再记商户费用 |
 
 ### 理由
 
@@ -236,20 +240,11 @@ Transaction: PAID → CAPTURED
 3. **简化逻辑** — 无需维护日切批次状态，减少定时任务
 4. **无需入库** — Clearing 是过程，输出是 Balance Movement，不产生额外记录
 
-## 决策 9：Transaction 存渠道状态
+## 决策 9：渠道原始码与平台 SETTLED 分开
 
-Transaction 表直接存储渠道（acquirer）返回的状态，平台不做过滤或映射。
+渠道返回码写入 `channel_raw_status`。平台 `Transaction.status` 用上表枚举。`SETTLED` 专指**下游商户结算完成**，不是 acquirer 银行到账。
 
-### 理由
-
-1. **一致性** — 与渠道状态保持一致，减少映射错误
-2. **可追溯** — 任何状态变更都能追溯到渠道原始返回
-3. **调试友好** — 排查问题时直接对比渠道状态
-
-### 注意事项
-
-- 渠道状态可能与平台状态不一致（如渠道报 SETTLED 但平台未收到资金）
-- 需要对账机制定期校验渠道状态与实际资金流水
+上游到账：Balance Movement 类型 `SETTLEMENT`（`house:bank` / `receivable:txn`），与能否退款无关。
 
 ## 决策 10：Order 区分 SALE 和 REFUND
 

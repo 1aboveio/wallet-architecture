@@ -20,7 +20,7 @@
 | 账户 | 说明 |
 |------|------|
 | `customer:{id}:available:{ccy}` | 可用余额，可提现、换汇、付款 |
-| `customer:{id}:pending:{ccy}` | 待结算余额，T+7 后进入 available |
+| `customer:{id}:pending:{ccy}` | CAPTURE 清分用的过渡账户；清分完成后为 0。不是「等到 T+7 才进 available」 |
 | `customer:{id}:frozen_hold:{ccy}` | 冻结预留，风控冻结的 pending 资金 |
 | `customer:{id}:reserve:fixed:{ccy}` | 固定保证金，手动释放到 available |
 | `customer:{id}:reserve:rolling:{ccy}` | 滚动保证金，N 天后自动释放到 available |
@@ -35,6 +35,7 @@
 | `expense:refund:{ccy}` | Expense | 退款支出 |
 | `expense:card_network_fee:{ccy}` | Expense | 卡组织通道费 |
 | `expense:acquirer_fee:{ccy}` | Expense | 收单行费用 |
+| `payable:acquirer:{ccy}` | Liability | 应付通道/收单行费用（上游未付） |
 
 ### 示例
 
@@ -55,7 +56,7 @@
 平台:
   house:bank:USD                  → $10,000.00
   receivable:txn:USD              → $550.00
-  revenue:fee:acquiring           → $25.00
+  revenue:fee:acquiring:USD       → $25.00
 ```
 
 ## 余额结构
@@ -67,7 +68,7 @@
 │  冻结时: pending 减少, frozen_hold 增加（划出）    │
 │  解冻后: frozen_hold → available 或 pending          │
 │                                                      │
-│  清分后: 剩余 pending → available                    │
+│  CAPTURE 清分: pending 拆进 available / reserve / 收入 │
 │  冻结部分: 解冻后 → available 或 pending              │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
@@ -98,8 +99,8 @@
 ## 余额公式
 
 ```
-可结算金额    = pending - frozen_hold
-商户总资金    = available + pending + reserve
+可结算金额    = pending（冻结已从 pending 划出，不要再减 frozen_hold）
+商户总资金    = available + pending + frozen_hold + reserve:fixed + reserve:rolling + special_account
 S = 该笔结算币种
 可退款覆盖    = available:{S} + pending:{S} + (主币种 available / fallback_fx_rate)
 退款实扣      = 先扣 available:{S}，不足再扣 available:{primary}
