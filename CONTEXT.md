@@ -35,8 +35,12 @@ _Avoid_: 主币, home_currency, billing_currency, functional_currency
 _Avoid_: 卡组清算币种（口语可指同一件事，字段用 channel_settlement_currency）, scheme_currency, acquirer_reconciliation_currency
 
 **锁汇 (capture_fx_rate)**:
-CAPTURE 锁定的请款币种 → 结算币种汇率。退款、VOID、滚动按比例退回都用这张汇率，不用即期。
-_Avoid_: 即期汇率, mid_market_rate（报表折算可用，不入账）
+CAPTURE 锁定的请款币种 → 结算币种汇率。只用于 CAPTURE 入账与 VOID 冲回。
+_Avoid_: 用锁汇做退款商户扣款
+
+**退款汇率 (refund_fx_rate)**:
+退款时请款币种 → 结算币种的汇率。优先用通道该笔退款汇率，否则用退款时牌价。商户 `refund_booking_amount` 用它，不用锁汇。
+_Avoid_: capture_fx_rate, 报表用的 mid_market_rate
 
 ### 费用与保证金
 
@@ -49,8 +53,8 @@ _Avoid_: 用入账金额重乘 MDR（有兑汇时先按请款金额计价再折�
 _Avoid_: 按请款币种标价, 另从主币种钱包扣一笔
 
 **滚动保证金 (rolling_reserve)**:
-入账金额 × 比率，记入 `reserve:rolling:{settlement_currency}`。HELD 状态退款按退款入账金额 / 入账金额的比例退回同币 available；已释放或已升级不退。
-_Avoid_: 按请款币种或上游结算币种单开滚动池
+入账金额 × 比率，记入 `reserve:rolling:{settlement_currency}`。HELD 状态退款按请款金额比例退回同币 available（`refund_presentment_amount / presentment_amount × original_rolling_reserve`）；已释放或已升级不退。
+_Avoid_: 按请款币种或上游结算币种单开滚动池, 按入账即期比例退回
 
 **固定保证金 (fixed_reserve)**:
 账户级抵押。目标金额与账户为 `reserve:fixed:{primary_currency}`。从该笔剩余入账金额按锁汇折进主币种抽；退款不退回。
@@ -63,5 +67,5 @@ _Avoid_: 每个开通结算币种各设一个固定目标
 _Avoid_: 用入账金额做买家侧上限
 
 **退款入账金额 (refund_booking_amount)**:
-退款请款金额 × 原锁汇，从该笔结算币种钱包扣减。尾笔等于入账金额减去已退入账累计，吃掉分位差。
-_Avoid_: 即期汇率重折
+退款请款金额 × 退款汇率，从该笔结算币种钱包扣减。请款侧尾笔吃分位；入账侧加总可以不等于原入账金额（汇差在商户）。
+_Avoid_: 用锁汇折退款入账, 强制入账侧加总还原
