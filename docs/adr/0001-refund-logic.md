@@ -4,11 +4,11 @@
 
 ## 决策 1：退款可用资金不包含保证金，主币种作 fallback
 
-覆盖口径（该笔结算币种计）不含 reserve。结算钱包不够时，把主币种 available 按 `refund_fx_rate` 折进来。
+覆盖口径（该笔结算币种 S 计）不含 reserve。结算钱包不够时，把主币种 available 按 **兜底汇率** `fallback_fx_rate`（S → primary）折成 S。不要用 `refund_fx_rate`（那是请款 → 结算）。
 
 ```
 可退款资金 = available:{S} + pending:{S}
-           + (S ≠ primary ? available:{primary} 折成 S : 0)
+           + (S ≠ primary ? available:{primary} / fallback_fx_rate : 0)
 S = 该笔 settlement_currency
 不含 reserve:fixed / reserve:rolling
 ```
@@ -35,7 +35,7 @@ S = 该笔 settlement_currency
 
 ```
 1. available:{S} 扣到 0（不扣 pending、不扣 reserve）
-2. 缺口按 refund_fx_rate 从 available:{primary} 扣
+2. 缺口按 fallback_fx_rate（S→primary）从 available:{primary} 扣
 3. 主币种仍不足：允许 available:{primary} 为负
    （S = primary 时即该币种 available 为负）
 ```

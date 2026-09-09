@@ -31,10 +31,10 @@
 |------|------|------|
 | `house:bank:{ccy}` | Asset | 平台银行账户 |
 | `receivable:txn:{ccy}` | Asset | 应收交易款（不分客户，汇总） |
-| `revenue:fee:acquiring` | Revenue | 收单服务费收入 |
-| `expense:refund` | Expense | 退款支出 |
-| `expense:card_network_fee` | Expense | 卡组织通道费 |
-| `expense:acquirer_fee` | Expense | 收单行费用 |
+| `revenue:fee:acquiring:{ccy}` | Revenue | MDR 收入 |
+| `expense:refund:{ccy}` | Expense | 退款支出 |
+| `expense:card_network_fee:{ccy}` | Expense | 卡组织通道费 |
+| `expense:acquirer_fee:{ccy}` | Expense | 收单行费用 |
 
 ### 示例
 
@@ -50,7 +50,7 @@
   customer:xyz:available:EUR      → €300.00
   customer:xyz:pending:EUR        → €500.00
   customer:xyz:frozen_hold:EUR    → €0.00
-  customer:xyz:reserve:EUR        → €15.00
+  customer:xyz:reserve:rolling:EUR → €15.00
 
 平台:
   house:bank:USD                  → $10,000.00
@@ -67,8 +67,8 @@
 │  冻结时: pending 减少, frozen_hold 增加（划出）    │
 │  解冻后: frozen_hold → available 或 pending          │
 │                                                      │
-│  T+7 结算时: 剩余 pending → available                │
-│  冻结部分: 解冻后 → available                         │
+│  清分后: 剩余 pending → available                    │
+│  冻结部分: 解冻后 → available 或 pending              │
 │                                                      │
 ├─────────────────────────────────────────────────────┤
 │              customer:{id}:available:{ccy}            │
@@ -90,7 +90,7 @@
 │              customer:{id}:frozen_hold:{ccy}          │
 │                                                      │
 │  冻结预留，从 pending 中划出（pending 减少对应金额）      │
-│  解冻后贷回 available                                  │
+│  解冻后转回 available；仍待结则回 pending               │
 │                                                      │
 └─────────────────────────────────────────────────────┘
 ```
@@ -100,8 +100,9 @@
 ```
 可结算金额    = pending - frozen_hold
 商户总资金    = available + pending + reserve
-可退款覆盖    = available:{S} + pending:{S} + 主币种 available 折 S（不含 reserve）
-退款实扣      = available:{S} → available:{primary}（不扣 pending / reserve）
+S = 该笔结算币种
+可退款覆盖    = available:{S} + pending:{S} + (主币种 available / fallback_fx_rate)
+退款实扣      = 先扣 available:{S}，不足再扣 available:{primary}
 ```
 
 ## 并发控制：乐观锁

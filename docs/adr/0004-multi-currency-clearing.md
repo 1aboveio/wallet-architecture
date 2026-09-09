@@ -13,7 +13,7 @@
 5. **退款汇率用即期。** 买家退原请款金额；商户扣 `refund_booking_amount = refund_presentment_amount × refund_fx_rate`。`refund_fx_rate` 优先用通道该笔退款汇率，否则用退款时牌价。不用 `booking_fx_rate`。
 6. **VOID 冲原入账汇率。** 未 SETTLED 的撤销是原分录反向，不是一笔新的 FX。
 7. **滚动退回按请款比例。** `rolling_return = refund_presentment_amount / presentment_amount × original_rolling_reserve`，币种仍是原结算币种。不用入账即期比例。
-8. **退款实扣结算钱包，不足扣主币种。** 不扣 pending / reserve。主币种仍不足则 `available:{primary}` 为负。负余额只被同币种后续收入冲抵（ADR 0001）。
+8. **退款实扣结算钱包，不足扣主币种。** 不扣 pending / reserve。缺口用 `fallback_fx_rate`（结算币种→主币种）从 `available:{primary}` 扣，仍不足则主币种为负。负余额只被同币种后续收入冲抵（ADR 0001）。
 
 ### 为何不叫锁汇
 

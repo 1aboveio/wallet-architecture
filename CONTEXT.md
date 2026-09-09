@@ -39,8 +39,12 @@ CAPTURE 换汇用的请款币种 → 结算币种汇率。只决定入账金额�
 _Avoid_: 锁汇, capture_fx_rate, locked_rate
 
 **退款汇率 (refund_fx_rate)**:
-退款时请款币种 → 结算币种的汇率。优先用通道该笔退款汇率，否则用退款时牌价。商户 `refund_booking_amount` 用它。
-_Avoid_: booking_fx_rate, 报表用的 mid_market_rate
+退款时**请款币种 → 结算币种**。优先用通道该笔退款汇率，否则用退款时牌价。只用于算 `refund_booking_amount`。结算币种已等于请款币种时为 1。
+_Avoid_: booking_fx_rate, 拿它做结算币→主币种的兜底
+
+**兜底汇率 (fallback_fx_rate)**:
+退款实扣时**结算币种 → 主币种**的即期（同通道本笔退款价）。结算钱包不够、要从 `available:{primary}` 补洞时用它。两币种相同则为 1。
+_Avoid_: 与 refund_fx_rate 混用（方向相反）
 
 ### 费用与保证金
 

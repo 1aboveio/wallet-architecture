@@ -52,7 +52,7 @@ IF refund_presentment_amount > 退款可执行金额
 
 ```
 允许状态: SETTLED
-拒绝状态: CAPTURED / VOIDED / REFUNDED_FULL / DISPUTED / PENDING
+拒绝状态: INIT / PAYING / PAID / CAPTURED / CANCELED / VOIDED / REFUNDED_FULL
 
 IF transaction.status != SETTLED
   → REJECT "INVALID_TRANSACTION_STATUS"
@@ -75,12 +75,12 @@ REFUND_WINDOW 建议:
 
 ```
 可退款资金 = available:{S} + pending:{S}
-           + (S ≠ primary ? available:{primary} 折成 S : 0)
-不含 reserve
+           + (S ≠ primary ? available:{primary} / fallback_fx_rate : 0)
+S = 该笔结算币种。不含 reserve。
 
 实扣顺序:
   1. available:{S} 扣到 0
-  2. 缺口扣 available:{primary}（refund_fx_rate）
+  2. 缺口按 fallback_fx_rate（S→primary）扣 available:{primary}
   3. 仍不足 → available:{primary} 为负，不 REJECT
 ```
 

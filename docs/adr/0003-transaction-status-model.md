@@ -93,9 +93,11 @@ Order 区分类型：SALE（收款）和 REFUND（退款）。REFUND 类型通�
 |---------------------|---------------|
 | PAID | CONFIRMED |
 | CAPTURED | COMPLETED |
+| SETTLED | COMPLETED |
 | CANCELED | CANCELLED |
 | VOIDED | CANCELLED |
 | REFUNDED | REFUNDED |
+| REFUNDED_FULL | REFUNDED |
 
 ---
 

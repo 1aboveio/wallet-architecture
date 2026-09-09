@@ -7,18 +7,18 @@
 上游（收单行 → PF）与下游（PF → 商户）是**两本独立的账**，互不影响：
 
 - **上游**：收单行结算时间、到账金额、通道费 —— PF 与收单行之间
-- **下游**：基于原始交易金额，按约定费率和保证金规则给商户结算 —— PF 与商户之间
+- **下游**：按请款/入账金额清分 MDR 与保证金 —— PF 与商户之间（CAPTURE 记账）
 
 ```
 上游账本（PF ↔ 收单行）              下游账本（PF ↔ 商户）
 ┌──────────────────────┐           ┌──────────────────────┐
-│ 收单行结算: $97.50    │           │ 原交易金额: $100      │
-│ 通道费: $2.50         │           │ 退款: -$30            │
-│                      │    独立   │ 服务费 1%×$100: -$1   │
-│ PF 银行到账           │◄─ ─ ─ ─►│ 保证金 5%×$70: -$3.50 │
-│                      │           │                      │
-│ PF 的成本             │           │ 商户实收: $65.50      │
-│ 影响 PF 利润          │           │                      │
+│ 收单行结算: $97.50    │           │ 请款 $100             │
+│ 通道费: $2.50         │           │ CAPTURE: MDR $1      │
+│                      │    独立   │ 保证金 $5（按 $100）  │
+│ PF 银行到账           │◄─ ─ ─ ─►│ 结算净额 $94          │
+│                      │           │ 退 $30 后退滚动 $0.60 │
+│ PF 的成本             │           │ 退 MDR $0.30         │
+│                      │           │ 结算净额侧最终 $64.90 │
 └──────────────────────┘           └──────────────────────┘
 ```
 
@@ -65,14 +65,14 @@ T+7   下游 SETTLED（资金归属商户）；费用/保证金在 CAPTURE 已�
 | 负债 | `customer:{id}:available:{ccy}` | 商户可用余额 |
 | 负债 | `customer:{id}:reserve:fixed:{ccy}` | 商户固定保证金 |
 | 负债 | `customer:{id}:reserve:rolling:{ccy}` | 商户滚动保证金 |
-| 收入 | `revenue:fee:acquiring` | 收单服务费收入 |
-| 费用 | `expense:refund` | 退款支出 |
+| 收入 | `revenue:fee:acquiring:{ccy}` | MDR 收入 |
+| 费用 | `expense:refund:{ccy}` | 退款支出 |
 
 ---
 
 ## 场景一：无退款
 
-原交易 $100，无退款，服务费 1%，保证金 5%
+请款 $100，无退款，MDR 1%，保证金 5%
 
 ```mermaid
 sequenceDiagram
@@ -81,15 +81,15 @@ sequenceDiagram
     participant T as 账本
     participant M as 商户钱包
 
-    Note over T: T+0 Capture
+    Note over T: T+0 Capture 清分
     C->>T: 借 receivable:txn +$100
-    T->>T: 贷 payable:pending +$100
-
-    Note over T: T+7 结算
-    T->>T: 借 payable:pending -$100
+    T->>T: 贷 pending +$100
+    T->>T: 借 pending -$100
     T->>M: 贷 available +$94.00
-    T->>T: 贷 reserve +$5.00 (保证金 $100×5%)
-    T->>T: 贷 revenue +$1.00 (服务费 $100×1%)
+    T->>T: 贷 reserve +$5.00 (入账 $100×5%)
+    T->>T: 贷 revenue MDR +$1.00
+
+    Note over T: T+7 SETTLED 无额外商户分录
 ```
 
 ### 分录明细
@@ -105,13 +105,13 @@ sequenceDiagram
     pending             = $100
     available           = $0
 
-── T+7 结算给商户 ─────────────────────────────────────
+── T+0 清分（费用与保证金此时入账）─────────────────────
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00    ← 商户可用余额
   贷  customer:abc:reserve:fixed:USD      +$3.00     ← 固定保证金 = $100 × 3%
   贷  customer:abc:reserve:rolling:USD    +$2.00     ← 滚动保证金 = $100 × 2%
-  贷  revenue:fee:acquiring               +$1.00     ← 服务费
+  贷  revenue:fee:acquiring:USD           +$1.00     ← MDR
 
   余额:
     pending             = $0
@@ -125,7 +125,7 @@ sequenceDiagram
 
 ## 场景二：部分退款 $30（结算后退款）
 
-原交易 $100，结算后退款 $30，服务费 1%，保证金 5%（固定 3% + 滚动 2%）
+请款 $100，SETTLED 后退款 $30，MDR 1%，保证金 5%（固定 3% + 滚动 2%）
 
 **注：** 退款只能在 SETTLED 之后发起（见 ADR 0003），settlement 前的撤销走 VOIDED 流程。
 
@@ -140,12 +140,12 @@ sequenceDiagram
     C->>T: 借 receivable:txn +$100
     T->>T: 贷 pending +$100
 
-    Note over T: T+7 结算
+    Note over T: T+0 Capture 清分
     T->>T: 借 pending -$100
     T->>M: 贷 available +$94.00
     T->>T: 贷 reserve:fixed +$3.00
     T->>T: 贷 reserve:rolling +$2.00
-    T->>T: 贷 revenue +$1.00
+    T->>T: 贷 MDR +$1.00
 
     Note over T: T+10 退款 $30（SETTLED 后）
     T->>T: 借 available -$30
@@ -162,13 +162,13 @@ sequenceDiagram
   借  receivable:txn:USD                  +$100.00
   贷  customer:abc:pending:USD            +$100.00
 
-── T+7 结算给商户 ─────────────────────────────────────
+── T+0 清分（费用与保证金此时入账）─────────────────────
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
   贷  customer:abc:reserve:fixed:USD      +$3.00     ← 固定保证金 = $100 × 3%
   贷  customer:abc:reserve:rolling:USD    +$2.00     ← 滚动保证金 = $100 × 2%
-  贷  revenue:fee:acquiring               +$1.00     ← 服务费 = $100 × 1%
+  贷  revenue:fee:acquiring:USD           +$1.00     ← MDR = $100 × 1%
 
 ── T+10 退款 $30（SETTLED 后，从 available 扣减）──────
 
@@ -193,7 +193,7 @@ sequenceDiagram
 
 ## 场景三：全额退款（结算后退款）
 
-原交易 $100，结算后全额退款 $100，服务费 1%，保证金 5%（固定 3% + 滚动 2%）
+请款 $100，SETTLED 后全额退款 $100，MDR 1%，保证金 5%（固定 3% + 滚动 2%）
 
 **注：** 退款只能在 SETTLED 之后发起（见 ADR 0003）。
 
@@ -208,12 +208,12 @@ sequenceDiagram
     C->>T: 借 receivable:txn +$100
     T->>T: 贷 pending +$100
 
-    Note over T: T+7 结算
+    Note over T: T+0 Capture 清分
     T->>T: 借 pending -$100
     T->>M: 贷 available +$94.00
     T->>T: 贷 reserve:fixed +$3.00
     T->>T: 贷 reserve:rolling +$2.00
-    T->>T: 贷 revenue +$1.00
+    T->>T: 贷 MDR +$1.00
 
     Note over T: T+14 全额退款 $100（SETTLED 后）
     T->>T: 借 available -$100
@@ -230,13 +230,13 @@ sequenceDiagram
   借  receivable:txn:USD                  +$100.00
   贷  customer:abc:pending:USD            +$100.00
 
-── T+7 结算给商户 ─────────────────────────────────────
+── T+0 清分（费用与保证金此时入账）─────────────────────
 
   借  customer:abc:pending:USD            -$100.00
   贷  customer:abc:available:USD          +$94.00
   贷  customer:abc:reserve:fixed:USD      +$3.00
   贷  customer:abc:reserve:rolling:USD    +$2.00
-  贷  revenue:fee:acquiring               +$1.00
+  贷  revenue:fee:acquiring:USD           +$1.00     ← MDR
 
 ── T+14 全额退款 $100（SETTLED 后，从 available 扣减）──
 
@@ -266,15 +266,15 @@ sequenceDiagram
 
 | 指标 | 无退款 | 部分退款 $30（结算后） | 全额退款（结算后） |
 |------|--------|----------------------|-------------------|
-| T+0 pending | $100 | $100 | $100 |
-| T+7 结算后 available | $94.00 | $94.00 | $94.00 |
+| T+0 pending（清分前） | $100 | $100 | $100 |
+| CAPTURE 清分后 available | $94.00 | $94.00 | $94.00 |
 | 退款扣减 available | — | -$30 | -$100 |
 | 滚动保证金退回 | — | +$0.60 | +$2.00 |
 | 退 MDR | — | +$0.30 | +$1.00 |
-| 服务费 1%×$100（剩余） | $1.00 | $0.70 | $0 |
+| MDR 1%×$100（剩余） | $1.00 | $0.70 | $0 |
 | 固定保证金 3%×$100 | $3.00 | $3.00 | $3.00 |
 | 滚动保证金 2%×$100 | $2.00 | $1.40 | $0 |
-| **商户最终 available** | **$94.00** | **$64.90** | **-$3.00（负余额=留下的固定）** |
+| **商户最终 available** | **$94.00** | **$64.90** | **-$3.00（倒欠 $3，与未退固定 $3 同额）** |
 | **平台 MDR 收入** | **$1.00** | **$0.70** | **$0** |
 
 ## 关键设计规则

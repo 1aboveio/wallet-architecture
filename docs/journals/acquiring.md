@@ -31,7 +31,7 @@
   贷  revenue:fee:per_item:USD               +$0.30
 ```
 
-退 $30（即期无意义）：扣 $30，退 MDR $0.45，退滚动 $1.50。
+退 $30（同币种，refund_fx_rate = 1，无汇差）：扣 $30，退 MDR $0.45，退滚动 $1.50。
 
 ---
 
@@ -65,7 +65,7 @@
 
 ```
   借  expense:card_network_fee:EUR           +€1.20
-  贷  通道应付款:EUR                         +€1.20
+  贷  payable:acquirer:EUR                   +€1.20
 ```
 
 ### 退款 €30，即期 1.20
@@ -121,7 +121,7 @@ EUR rolling **不能**升级成 USD 固定，到期释放进 `available:EUR`。
 
 ## D. 接 C：退 €40，EUR 钱包不够，主币种兜底
 
-即期 1.20。退款入账 €40。`available:EUR` 仅 €10，`available:USD` $100。
+`fallback_fx_rate`（EUR→USD）1.20。退款入账 €40。`available:EUR` 仅 €10，`available:USD` $100。
 
 1. 扣 EUR €10  
 2. 缺口 €30 × 1.20 = $36，扣 USD  
@@ -141,7 +141,7 @@ EUR rolling **不能**升级成 USD 固定，到期释放进 `available:EUR`。
   贷  customer:abc:available:EUR             +€2.00
 ```
 
-USD 也只有 $10 时：扣光 $10，剩余打在 `available:USD` 为负。EUR 不负。pending / reserve 不扣。
+USD 也只有 $10 时：先扣光 $10，缺口 $26 记在 `available:USD` 为负（−$26）。EUR 不产生负余额。pending / reserve 不扣。
 
 ---
 
@@ -178,7 +178,7 @@ MDR = THB 3,500 × 1.5% 再折 USD，**不要** $100 × 1.5%。
 
 ## G. 同币种退款：滚动 HELD（ADR 0001 Case 1）
 
-原请款 $100，滚动 $5，MDR $1.00。退 $30。
+本例 MDR **1%**（与文首默认 1.5% 不同）。原请款 $100，滚动 $5，MDR $1.00。退 $30。
 
 ```
   借  customer:abc:available:USD             -$30.00

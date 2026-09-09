@@ -71,12 +71,20 @@ IF 剩余余额 <= 0 或 目标差额 == 0
 | 释放 | rolling → available（同币种） | N 天后 |
 | 升级 | rolling → fixed | 手动，仅主币种全额 |
 
+滚动记录（`reserve_entries`）状态：
+
+| 状态 | 含义 |
+|------|------|
+| `HELD` | 仍在 `reserve:rolling` |
+| `RELEASED` | 已到期释放到 available |
+| `RESERVE_RELEASED` | 已升级进 fixed，不从 rolling 退 |
+
 升级约束：
 
 - 只升级 `reserve:rolling:{primary}` → `reserve:fixed:{primary}`
 - 全额、不经过 available、无 FX
 - 不允许把 EUR rolling 兑成 USD fixed
-- entries → `RESERVE_RELEASED`
+- 被升级的 `reserve_entries` 状态置为 `RESERVE_RELEASED`
 
 退款：仅 `HELD` 按请款比例退回；`RELEASED` / `RESERVE_RELEASED` 不退。分录见 [journals/acquiring.md](../journals/acquiring.md)。
 

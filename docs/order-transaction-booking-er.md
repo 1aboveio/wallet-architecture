@@ -89,7 +89,7 @@
 │   │  movement_id: MOV-001                                                    │  │
 │   │  transaction_id: TXN-001                                                 │  │
 │   │  order_id: ORD-001                                                       │  │
-│   │  type: COLLECTION / FEE / RESERVE / REFUND / PAYOUT                     │  │
+│   │  type: COLLECTION / FEE / RESERVE / REFUND / PAYOUT / SETTLEMENT / VOID │  │
 │   │  account: customer:abc:pending:USD                                       │  │
 │   │  amount: +$100                                                           │  │
 │   │  currency: USD                                                           │  │
@@ -98,7 +98,7 @@
 │   │  movement_id: MOV-002                                                    │  │
 │   │  transaction_id: TXN-001                                                 │  │
 │   │  type: FEE                                                               │  │
-│   │  account: revenue:platform:mdr:USD                                       │  │
+│   │  account: revenue:fee:acquiring:USD                                      │  │
 │   │  amount: +$2.50                                                          │  │
 │   │  created_at: 2024-01-15 10:00:05                                         │  │
 │   ├──────────────────────────────────────────────────────────────────────────┤  │
@@ -117,8 +117,8 @@
 │   │  entry_id: JNL-001                                                       │  │
 │   │  movement_id: MOV-001                                                    │  │
 │   │  entries:                                                                │  │
-│   │    借  receivable:acquirer:USD     +$100                                 │  │
-│   │    贷  payable:merchant:pending:USD +$100                                │  │
+│   │    借  receivable:txn:USD          +$100                                 │  │
+│   │    贷  customer:abc:pending:USD    +$100                                 │  │
 │   │  created_at: 2024-01-15 10:00:05                                         │  │
 │   └──────────────────────────────────────────────────────────────────────────┘  │
 │                                                                                 │
@@ -188,10 +188,11 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
 |---------------------|---------------|------------------|
 | PAID (AUTHORIZED) | CONFIRMED | — |
 | CAPTURED | COMPLETED | COLLECTION + FEE + RESERVE |
-| SETTLED | — | SETTLEMENT |
+| SETTLED | 仍为 COMPLETED | SETTLEMENT（上游到账确认，可无金额） |
 | CANCELED | CANCELLED | — |
-| VOIDED | CANCELLED | REVERSAL |
+| VOIDED | CANCELLED | VOID（冲 CAPTURE 原分录） |
 | REFUNDED | REFUNDED | REFUND |
+| REFUNDED_FULL | REFUNDED | REFUND（全额后退款终态） |
 
 ## 数据量参考
 
@@ -218,13 +219,13 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
 
    Balance Movements:
      MOV-001: COLLECTION  customer:abc:pending:USD     +$100
-     MOV-002: FEE         revenue:platform:mdr:USD     +$2.50
-     MOV-003: FEE         revenue:platform:gateway:USD +$0.30
+     MOV-002: FEE         revenue:fee:acquiring:USD    +$2.50
+     MOV-003: FEE         revenue:fee:per_item:USD     +$0.30
      MOV-004: RESERVE     customer:abc:reserve:rolling:USD +$5.00
 
    Ledger Entries:
-     JNL-001: 借 receivable:acquirer:USD +$100 / 贷 payable:merchant:pending:USD +$100
-     JNL-002: 借 merchant:pending:USD -$2.50 / 贷 revenue:platform:mdr:USD +$2.50
+     JNL-001: 借 receivable:txn:USD +$100 / 贷 customer:abc:pending:USD +$100
+     JNL-002: 借 customer:abc:pending:USD -$2.50 / 贷 revenue:fee:acquiring:USD +$2.50
      ...
 
 4. Acquirer 结算（T+1）
@@ -236,5 +237,5 @@ INIT → PAYING → PAID → CAPTURED → SETTLED
 5. 商户提现（T+7）
    Balance Movement:
      MOV-006: PAYOUT      customer:abc:available:USD -$92.20
-                           bank:merchant:usd +$92.20
+                           house:bank:USD +$92.20
 ```

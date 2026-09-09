@@ -45,7 +45,7 @@ sequenceDiagram
     Acq-->>PF: Capture 确认
     PF-->>M: Capture 确认
 
-    Note over PF: 记账分录:<br>借: 应收收单行 +$100<br>贷: 应付商户待结算 +$100
+    Note over PF: CAPTURE 清分:<br>pending +$100 随即拆成<br>available $94 / reserve $5 / MDR $1
 
     box rgb(230,255,230) ③ SETTLE 收单行 → PF
     end
@@ -66,9 +66,9 @@ sequenceDiagram
     Note over PF: 按结算周期批量处理<br>(如每日/每周)
 
     PF->>M: 结算通知
-    Note over M: 待结算 → 可用余额<br>$99.00 入钱包
+    Note over M: SETTLED：CAPTURE 已清分的净额归属商户<br>available $94（MDR $1 + 保证金 $5）
 
-    Note over PF: 记账分录:<br>借: 应付商户待结算 -$100<br>贷: 商户钱包余额 +$99<br>贷: 平台服务费收入 +$1
+    Note over PF: 无额外扣费分录（费用已在 CAPTURE 入账）
 ```
 
 ## 各阶段信息要素
@@ -79,7 +79,7 @@ sequenceDiagram
 | **Capture** | capture_id, auth_id, amount, shipping_info | 实时 | 可部分请款 |
 | **Clearing** | 费用计算、保证金扣减、余额更新 | CAPTURE 时实时触发 | — |
 | **Settle(Acq→PF)** | settlement_id, batch_id, net_amount, fee_detail, txn_list | T+1/T+2 批量 | 可调账 |
-| **Settle(PF→Merchant)** | settlement_id, merchant_id, gross, fee, net, period | 按结算周期 | 可调账 |
+| **Settle(PF→Merchant)** | settlement_id, merchant_id, presentment_amount, MDR, net_settlement_amount, period | 按结算周期 | 可调账 |
 
 ### Clearing 流程（实时清分）
 
