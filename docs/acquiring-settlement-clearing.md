@@ -1,5 +1,7 @@
 # 收单清算逻辑（Acquiring Settlement Clearing）
 
+规则以 ADR 0001–0004 为准。多币种分录见 [acquiring-journals.md](acquiring-journals.md)。下文同币种示意。
+
 ## 概述
 
 上游（收单行 → PF）与下游（PF → 商户）是**两本独立的账**，互不影响：

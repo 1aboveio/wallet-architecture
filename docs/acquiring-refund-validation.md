@@ -1,5 +1,7 @@
 # 退款校验规则（Refund Validation Rules）
 
+以 [ADR 0001](adr/0001-refund-logic.md) / [0004](adr/0004-multi-currency-clearing.md) 为准。分录见 [acquiring-journals.md](acquiring-journals.md)。
+
 ## 设计原则
 
 退款校验的核心目标：**防止资损**。确保每一笔退款都有对应的资金来源，不会出现平台垫款或商户超额退款的情况。

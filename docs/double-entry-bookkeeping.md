@@ -1,6 +1,6 @@
 # 复式记账分录参考（Double-Entry Bookkeeping Reference）
 
-同币种 USD 样例。跨币种、退款即期、按笔费与主币种兜底以 [ADR 0004](adr/0004-multi-currency-clearing.md) 为准。MDR 退款按请款比例退回。
+收款 / 换汇 / 提现分录仍用本文。收单清分（含多币种）以 [ADR 0004](adr/0004-multi-currency-clearing.md) 和 [分录手册](acquiring-journals.md) 为准。
 
 ## 账户总览
 

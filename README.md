@@ -2,6 +2,8 @@
 
 全球钱包平台产品架构设计，覆盖收单、收款、换汇、提现等核心支付场景的记账逻辑与风控规则。
 
+规则以 ADR 为准，词以 [CONTEXT.md](CONTEXT.md) 为准，收单分录以 [分录手册](docs/acquiring-journals.md) 为准。其余文章是背景或附录，不另立规则。
+
 ## 文档目录
 
 ### 账户体系
@@ -23,6 +25,7 @@
 | [收单清算逻辑](docs/acquiring-settlement-clearing.md) | 面向商户的分层清算，三种退款场景（无退款/部分退款/全额退款）记账分录 |
 | [退款校验规则](docs/acquiring-refund-validation.md) | 防资损校验、主币种兜底、负余额、保证金释放 |
 | [ADR 0004 多币种清分](docs/adr/0004-multi-currency-clearing.md) | 四币、CAPTURE 换汇、退款即期、按笔费扣结算钱包 |
+| [收单清分分录手册](docs/acquiring-journals.md) | 同币种与多币种分录（EUR/USD/THB、兜底、VOID） |
 
 ## 核心设计决策
 
