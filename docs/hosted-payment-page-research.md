@@ -154,6 +154,12 @@ Documentation issue found: the illustrative final example in [Order / Transactio
 
 Adyen also documents required terms and conditions and method-specific shopper/line-item data, particularly for BNPL [S7]. A minimal amount-only card integration cannot automatically enable every alternative method. Reusable payment links should produce independent buyer payment contexts; do not reuse one ecommerce order session across multiple buyers.
 
+The independent [provider evidence review](hosted-payment-page-provider-research.md) adds two implementation constraints:
+
+- **Do not assume upstream webhook contracts are uniform.** Stripe documents signed events and Adyen documents HMAC verification. The reviewed Worldpay HPP documentation establishes HTTPS, source IPs and retries, but does not establish payload signing, replay protection, ordering or session-creation idempotency guarantees. Confirm these before selecting an adapter strategy. Our proposed platform-to-merchant signed webhook contract is a requirement for our service, not a claim that every upstream already supplies it.
+- **Test browser-to-bank-app round trips.** Worldpay recommends the default mobile browser and discourages WebViews because returning from bank apps can lose session context. For mobile merchant integrations, prefer a supported system-browser flow and explicitly test app return/deep-link behavior.
+
+
 ## PCI and implementation boundary
 
 Full redirect is the recommended default for a small merchant integration surface. PCI SSC FAQ 1588 says the specific SAQ A script-attack eligibility criterion applies to embedded payment pages/forms and does not apply to redirects or fully outsourced link-based flows. It explicitly does not waive other eligibility criteria [S6]. Therefore, describe hosted redirect as reducing merchant scope, never as “no PCI obligations.” Confirm actual assessment requirements with the compliance-accepting entity.
