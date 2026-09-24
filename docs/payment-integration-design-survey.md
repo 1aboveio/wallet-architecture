@@ -31,6 +31,26 @@ Keep frontend integration mode independent from the financial ledger. This repos
 
 “Drop-in” is a product abstraction, not a promise of one iframe. Some SDKs combine merchant-page markup with secured field iframes, popups and redirect actions. Separate fields can be multiple iframes. An iframe also does not make the entire parent checkout trustworthy: a compromised parent can alter displayed prices or replace the payment UI.
 
+## Provider comparison: documented design and DX assessment
+
+These are qualitative assessments of the documented integration burden, not timed benchmarks. Detailed citations and version boundaries are in the [provider evidence note](payment-sdk-iframe-provider-survey.md).
+
+| Provider / product | Design | Developer experience and material limitation |
+|---|---|---|
+| Stripe Checkout / Payment Element | Hosted/embedded checkout or secure multi-method Element; Sessions and PaymentIntents are distinct backend contracts | Strong reference for a layered product and official React wrappers. Do not mix Sessions provider/confirmation APIs with PaymentIntents examples |
+| Adyen Web v6 Drop-in / Components | Backend `/sessions`; browser `clientKey` + session data; chooser or individual method components; sensitive card fields in iframes | Strong reference for sharing payment orchestration across UI modes. Merchant styles outer UI separately from secured inputs; React integration is imperative with explicit mount discipline |
+| PayPal JS SDK v6 / v5 CardFields | v6 uses SDK instances, web components and method-specific sessions; card submit precedes server capture | Explicit eligibility and approval/capture boundaries. Product-generation and credential-documentation differences add integration friction; no universal client-token rule |
+| Braintree Hosted Fields v3 | Individual secure fields produce a nonce; backend submits a transaction; 3DS is a separate component | Good reference for custom field layout and granular events. More merchant orchestration than a multi-method Drop-in; tokenization-key and client-token capabilities differ |
+| Checkout.com Flow | Public key + server-created PaymentSession; prebuilt chooser or individual methods; handles payment actions | Good reference for a compact session-based embedded API. Cannot be placed inside an outer iframe or Shadow DOM; `onPaymentCompleted` only covers synchronous completion and reports `Approved` |
+| Worldpay Access Checkout Web v2 | Secure fields generate a short-lived single-use card session for downstream payment/token APIs | Useful focused collection primitive with explicit React cleanup and Shadow DOM guidance. Session generation is not a payment; card-session lifetime is documented as one minute |
+| Airwallex Drop-in | Backend PaymentIntent; browser intent ID + client secret; create/mount/event lifecycle | Clear end-to-end quickstart and server verification. Account/method activation and major-unit amount convention need deliberate handling [D1] |
+
+Three adapter consequences are easy to miss:
+
+- **Event coverage differs.** Braintree's reviewed `transaction_settled` and `transaction_settlement_declined` webhook reference applies to ACH/SEPA sale/refund requests. Do not assume those events provide general card settlement coverage; define retrieval/report reconciliation for the selected card flow.
+- **“Complete” differs.** Flow's synchronous callback is not a universal completion hook for 3DS/asynchronous flows; PayPal card submission still precedes capture; a Worldpay session or Braintree nonce only represents collected payment details.
+- **Embedding differs.** Flow prohibits an outer iframe and Shadow DOM, whereas Worldpay documents Shadow DOM integration. A shared merchant wrapper must respect each adapter's supported context rather than assuming all iframe-based SDKs are interchangeable.
+
 ## Additional cross-border reference: Airwallex
 
 Airwallex's Drop-in quickstart documents this sequence: server authenticates with Client ID/API key; creates a PaymentIntent; frontend receives `id`, `client_secret` and currency; Airwallex.js initializes, creates the Drop-in and mounts it; ready/success/error events drive client UI; server retrieval or webhooks verify the actual payment [D1].
