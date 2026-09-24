@@ -109,5 +109,6 @@ CAPTURE 用 `booking_fx_rate`（请款→结算）换汇入账，不是锁汇。
 | [Order / Transaction / Movement](docs/order-transaction-booking-er.md) | 支付意图、渠道动作、资金账、会计分录 |
 | [流水账设计](docs/transaction-log-design.md) | 流水与账本的关系、六类流水表 |
 | [行业引用](docs/industry-references.md) | 外部资料 |
+| [Hosted payment page research](docs/hosted-payment-page-research.md) | 托管支付页功能、商户集成建议与来源；研究建议，非现行 ADR |
 
 历史叙述（清算长文、信息流、整本复式分录等）在 [docs/archive/](docs/archive/)，**不要当现行规则**。
