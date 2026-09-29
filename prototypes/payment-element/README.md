@@ -48,3 +48,10 @@ Variants:
 Payment processing remains mocked in memory. The card controls are real cross-origin iframes with validated `postMessage` events, but they are a debugging demonstration rather than production-hardened payment fields. No processor is called, no real card data should be entered, and the prototype makes no PCI claim.
 
 Product photography: [Unsplash](https://unsplash.com/photos/white-and-black-smart-watch-tAKXap853rY), used only as illustrative prototype content.
+
+## Public Cloudflare demo
+
+- Merchant demo: <https://wallet-payment-element-demo.jonas-gu.workers.dev/?variant=A>
+- Secure-field origin: <https://wallet-secure-fields-demo.jonas-gu.workers.dev>
+
+Deployment configuration and commands are documented in [`cloudflare/README.md`](../../cloudflare/README.md). The public deployment is still a synthetic-data prototype and must not receive real payment information.

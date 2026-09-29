@@ -1,0 +1,16 @@
+{
+  "name": "wallet-payment-element-demo",
+  "main": "./merchant-worker.mjs",
+  "compatibility_date": "2026-09-29",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist/merchant",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "SECURE_FIELD_ORIGIN": "https://wallet-secure-fields-demo.jonas-gu.workers.dev"
+  }
+}

@@ -5,6 +5,7 @@ const variants = {
 };
 
 const secureFieldOrigin = "http://127.0.0.1:4174";
+const secureFieldHost = new URL(secureFieldOrigin).host;
 const secureFieldProtocol = "walletpay.fields.v1";
 const secureFieldInstanceId = "pe_demo_1048";
 const secureFieldNames = ["number", "expiry", "cvc"];
@@ -401,7 +402,7 @@ function secureFieldFrame(field, title, wide = false) {
       ></iframe>
       <div class="frame-meta">
         <span class="frame-badge">iframe</span>
-        <code>127.0.0.1:4174</code>
+        <code title="${secureFieldHost}">${secureFieldHost}</code>
         <small data-frame-state="${field}">loading</small>
       </div>
     </div>
@@ -451,7 +452,7 @@ function paymentElement() {
 
       <div class="element-foot">
         <span>Session <code>${state.sessionId}</code></span>
-        <span>3 cross-origin frames on <code>127.0.0.1:4174</code></span>
+        <span>3 cross-origin frames on <code>${secureFieldHost}</code></span>
       </div>
     </section>
   `;
@@ -523,7 +524,7 @@ function stateStrip() {
 
 function eventLog() {
   return `
-    <div class="event-log" aria-live="polite">
+    <div class="event-log" aria-label="Payment event stream" aria-live="polite" tabindex="0">
       ${eventRowsMarkup()}
     </div>
   `;
@@ -761,6 +762,15 @@ function challengeModal() {
   `;
 }
 
+function demoBanner() {
+  return `
+    <div class="demo-warning" role="note">
+      <strong>Public prototype</strong>
+      <span>Synthetic test values only. Do not enter real payment information.</span>
+    </div>
+  `;
+}
+
 function handleSecureFieldMessage(messageEvent) {
   if (messageEvent.origin !== secureFieldOrigin) return;
 
@@ -860,6 +870,7 @@ function bindCodeTabEvents() {
 function render() {
   const variant = currentVariant();
   app.innerHTML = `
+    ${demoBanner()}
     ${variant === "A" ? variantA() : variant === "B" ? variantB() : variantC()}
     ${prototypeSwitcher()}
     ${challengeModal()}
