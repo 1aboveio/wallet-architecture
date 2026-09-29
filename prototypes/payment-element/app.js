@@ -4,6 +4,11 @@ const variants = {
   C: "Lifecycle review",
 };
 
+const secureFieldOrigin = "http://127.0.0.1:4174";
+const secureFieldProtocol = "walletpay.fields.v1";
+const secureFieldInstanceId = "pe_demo_1048";
+const secureFieldNames = ["number", "expiry", "cvc"];
+
 const scenarios = {
   capture: {
     label: "Card captured",
@@ -70,7 +75,11 @@ const initialState = () => ({
   resultTone: "neutral",
   recovery: null,
   method: "card",
-  complete: true,
+  fieldState: {
+    number: { complete: false, errorCode: null, focused: false },
+    expiry: { complete: false, errorCode: null, focused: false },
+    cvc: { complete: false, errorCode: null, focused: false },
+  },
   codeTab: "browser",
   inspectorTab: "events",
   events: [],
@@ -193,6 +202,15 @@ function beginSubmit() {
     state.result = "Replace the session before paying";
     state.resultTone = "warning";
     render();
+    return;
+  }
+
+  if (!canConfirm()) {
+    event("sdk", "confirm.failed", "validation_failed");
+    state.result = "Complete the secure payment fields";
+    state.resultTone = "danger";
+    refreshEventLogs();
+    refreshFieldUi();
     return;
   }
 
@@ -371,14 +389,35 @@ function scenarioControl(compact = false) {
   `;
 }
 
+function secureFieldFrame(field, title, wide = false) {
+  const src = `${secureFieldOrigin}/secure-field.html?field=${field}&instance=${secureFieldInstanceId}`;
+  return `
+    <div class="hosted-field ${wide ? "hosted-field--wide" : ""}" data-secure-field="${field}">
+      <iframe
+        src="${src}"
+        title="${title} secure payment field"
+        data-field="${field}"
+        loading="eager"
+      ></iframe>
+      <small data-frame-state="${field}">Loading cross-origin iframe :4174</small>
+    </div>
+  `;
+}
+
+function canConfirm() {
+  if (state.session !== "open" || state.submitting) return false;
+  if (state.method !== "card") return true;
+  return secureFieldNames.every((field) => state.fieldState[field].complete);
+}
+
 function paymentElement() {
   const isBlocked = state.session !== "open" || state.submitting;
   return `
-    <section class="payment-element" aria-label="Mock Payment Element">
+    <section class="payment-element" aria-label="Prototype Payment Element">
       <div class="element-head">
         <div>
           <h2>Payment</h2>
-          <p>All transactions are secure and encrypted.</p>
+          <p>Card inputs are isolated on the secure-field origin.</p>
         </div>
         <span class="status-tag status-tag--${toneFor(state.element)}">${state.element}</span>
       </div>
@@ -391,19 +430,9 @@ function paymentElement() {
 
       ${state.method === "card" ? `
         <div class="hosted-fields ${isBlocked ? "is-disabled" : ""}">
-          <label class="hosted-field hosted-field--wide">
-            <span>Card number</span>
-            <span class="mock-value">4242 4242 4242 4242</span>
-            <small>Provider-hosted iframe</small>
-          </label>
-          <label class="hosted-field">
-            <span>Expiry</span>
-            <span class="mock-value">12 / 30</span>
-          </label>
-          <label class="hosted-field">
-            <span>Security code</span>
-            <span class="mock-value">123</span>
-          </label>
+          ${secureFieldFrame("number", "Card number", true)}
+          ${secureFieldFrame("expiry", "Expiry")}
+          ${secureFieldFrame("cvc", "Security code")}
         </div>
       ` : `
         <div class="method-message">
@@ -414,7 +443,7 @@ function paymentElement() {
 
       <div class="element-foot">
         <span>Session <code>${state.sessionId}</code></span>
-        <span>No raw card data crosses this boundary</span>
+        <span>3 cross-origin frames on <code>127.0.0.1:4174</code></span>
       </div>
     </section>
   `;
@@ -422,7 +451,7 @@ function paymentElement() {
 
 function payControls() {
   const needsReplacement = state.session === "replacement required";
-  const canPay = state.session === "open" && !state.submitting;
+  const canPay = canConfirm();
   return `
     <div class="pay-controls">
       ${needsReplacement ? `
@@ -487,15 +516,19 @@ function stateStrip() {
 function eventLog() {
   return `
     <div class="event-log" aria-live="polite">
-      ${state.events.length ? state.events.map((item) => `
-        <div class="event-row">
-          <time>${item.time}</time>
-          <span class="source source--${item.source}">${item.source}</span>
-          <div><strong>${item.name}</strong><small>${item.detail}</small></div>
-        </div>
-      `).join("") : `<p class="empty-state">No events yet.</p>`}
+      ${eventRowsMarkup()}
     </div>
   `;
+}
+
+function eventRowsMarkup() {
+  return state.events.length ? state.events.map((item) => `
+    <div class="event-row">
+      <time>${item.time}</time>
+      <span class="source source--${item.source}">${item.source}</span>
+      <div><strong>${item.name}</strong><small>${item.detail}</small></div>
+    </div>
+  `).join("") : `<p class="empty-state">No events yet.</p>`;
 }
 
 function codePanel() {
@@ -598,12 +631,12 @@ function variantB() {
         </section>
 
         <aside class="diagnostic-panel">
-          <div class="inspector-tabs">
-            <button data-inspector="events" class="${state.inspectorTab === "events" ? "is-active" : ""}">Events</button>
-            <button data-inspector="code" class="${state.inspectorTab === "code" ? "is-active" : ""}">Code</button>
+          <div class="inspector-tabs" role="tablist" aria-label="Diagnostic view">
+            <button role="tab" aria-selected="${state.inspectorTab === "events"}" data-inspector="events" class="${state.inspectorTab === "events" ? "is-active" : ""}">Events</button>
+            <button role="tab" aria-selected="${state.inspectorTab === "code"}" data-inspector="code" class="${state.inspectorTab === "code" ? "is-active" : ""}">Code</button>
           </div>
           ${stateStrip()}
-          ${state.inspectorTab === "events" ? eventLog() : codePanel()}
+          <div class="inspector-content">${state.inspectorTab === "events" ? eventLog() : codePanel()}</div>
         </aside>
       </main>
     </div>
@@ -720,6 +753,102 @@ function challengeModal() {
   `;
 }
 
+function handleSecureFieldMessage(messageEvent) {
+  if (messageEvent.origin !== secureFieldOrigin) return;
+
+  const data = messageEvent.data;
+  if (!data || Object.getPrototypeOf(data) !== Object.prototype) return;
+  if (data.protocol !== secureFieldProtocol || data.instanceId !== secureFieldInstanceId) return;
+  if (!secureFieldNames.includes(data.field)) return;
+  if (!["field.ready", "field.change", "field.focus", "field.blur"].includes(data.type)) return;
+
+  const stateEvent = ["field.ready", "field.change"].includes(data.type);
+  const expectedKeys = stateEvent
+    ? ["protocol", "instanceId", "type", "field", "complete", "errorCode"]
+    : ["protocol", "instanceId", "type", "field"];
+  const payloadKeys = Object.keys(data);
+  if (payloadKeys.length !== expectedKeys.length || !expectedKeys.every((key) => payloadKeys.includes(key))) return;
+
+  const frame = document.querySelector(`iframe[data-field="${data.field}"]`);
+  if (!frame || messageEvent.source !== frame.contentWindow) return;
+
+  if (stateEvent) {
+    if (typeof data.complete !== "boolean") return;
+    if (data.errorCode !== null && data.errorCode !== `incomplete_${data.field}`) return;
+    if (data.complete && data.errorCode !== null) return;
+    state.fieldState[data.field].complete = data.complete;
+    state.fieldState[data.field].errorCode = data.errorCode;
+  }
+
+  if (data.type === "field.focus") state.fieldState[data.field].focused = true;
+  if (data.type === "field.blur") state.fieldState[data.field].focused = false;
+
+  const detail = stateEvent
+    ? `${data.field} complete=${data.complete}`
+    : data.field;
+  event("iframe", data.type, detail);
+  refreshFieldUi();
+  refreshEventLogs();
+}
+
+function refreshFieldUi() {
+  secureFieldNames.forEach((field) => {
+    const wrapper = document.querySelector(`[data-secure-field="${field}"]`);
+    if (!wrapper) return;
+    const fieldState = state.fieldState[field];
+    wrapper.classList.toggle("is-complete", fieldState.complete);
+    wrapper.classList.toggle("is-error", Boolean(fieldState.errorCode));
+    wrapper.classList.toggle("is-focused", fieldState.focused);
+    const status = wrapper.querySelector(`[data-frame-state="${field}"]`);
+    if (status) {
+      status.textContent = fieldState.errorCode
+        ? fieldState.errorCode
+        : fieldState.complete
+          ? "Ready - parent received complete=true"
+          : "Cross-origin iframe loaded";
+    }
+  });
+
+  const payButton = document.querySelector("#pay-button");
+  if (payButton) payButton.disabled = !canConfirm();
+}
+
+function refreshEventLogs() {
+  document.querySelectorAll(".event-log").forEach((log) => {
+    log.innerHTML = eventRowsMarkup();
+  });
+  const count = document.querySelector(".contract-stream .section-heading span");
+  if (count) count.textContent = `${state.events.length} events`;
+}
+
+function refreshCodePanels() {
+  document.querySelectorAll(".code-panel").forEach((panel) => {
+    panel.outerHTML = codePanel();
+  });
+  bindCodeTabEvents();
+}
+
+function refreshInspectorPanel() {
+  document.querySelectorAll("[data-inspector]").forEach((button) => {
+    const selected = button.dataset.inspector === state.inspectorTab;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  const content = document.querySelector(".inspector-content");
+  if (!content) return;
+  content.innerHTML = state.inspectorTab === "events" ? eventLog() : codePanel();
+  bindCodeTabEvents();
+}
+
+function bindCodeTabEvents() {
+  document.querySelectorAll("[data-code]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.codeTab = button.dataset.code;
+      refreshCodePanels();
+    });
+  });
+}
+
 function render() {
   const variant = currentVariant();
   app.innerHTML = `
@@ -729,6 +858,7 @@ function render() {
   `;
   if (state.challengeOpen) document.querySelector(".variant")?.setAttribute("inert", "");
   bindEvents();
+  refreshFieldUi();
 }
 
 function bindEvents() {
@@ -752,17 +882,12 @@ function bindEvents() {
     });
   });
 
-  document.querySelectorAll("[data-code]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.codeTab = button.dataset.code;
-      render();
-    });
-  });
+  bindCodeTabEvents();
 
   document.querySelectorAll("[data-inspector]").forEach((button) => {
     button.addEventListener("click", () => {
       state.inspectorTab = button.dataset.inspector;
-      render();
+      refreshInspectorPanel();
     });
   });
 
@@ -806,6 +931,7 @@ function escapeHtml(value) {
 }
 
 window.addEventListener("popstate", render);
+window.addEventListener("message", handleSecureFieldMessage);
 window.addEventListener("keydown", (event) => {
   if (state.challengeOpen) {
     if (event.key === "Escape") {
