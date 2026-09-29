@@ -321,7 +321,25 @@ pre,
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  padding: 20px;
+  padding: 12px 20px 20px;
+}
+
+.iframe-boundary-note {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 20px 0;
+  padding: 8px 10px;
+  border: 1px dashed #b88000;
+  border-radius: 4px;
+  color: #554713;
+  background: #fff8d8;
+  font-size: 0.75rem;
+}
+
+.iframe-boundary-note code {
+  color: #2a2410;
+  font-weight: 800;
 }
 
 .hosted-fields.is-disabled {
@@ -367,11 +385,38 @@ pre,
   background: #fff;
 }
 
-.hosted-field small {
-  min-height: 25px;
-  padding: 5px 11px 7px;
+.frame-meta {
+  min-height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-top: 1px dashed #d4bd78;
+  background: #fff8d8;
+}
+
+.frame-badge {
+  border: 1px solid #8d6800;
+  border-radius: 3px;
+  padding: 1px 4px;
+  color: #5f4700;
+  font-size: 0.61rem;
+  font-weight: 850;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.frame-meta code {
+  color: #494033;
+  font-size: 0.62rem;
+}
+
+.frame-meta small {
+  min-width: 0;
+  margin-left: auto;
   color: #657064;
-  background: #f7f8f6;
+  font-size: 0.62rem;
+  text-align: right;
 }
 
 .method-message {
@@ -1308,6 +1353,17 @@ pre,
 
   .element-foot {
     flex-direction: column;
+  }
+
+  .frame-meta {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .frame-meta small {
+    grid-column: 1 / -1;
+    margin-left: 0;
+    text-align: left;
   }
 
   .scenario-rail {

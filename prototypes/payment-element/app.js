@@ -399,7 +399,11 @@ function secureFieldFrame(field, title, wide = false) {
         data-field="${field}"
         loading="eager"
       ></iframe>
-      <small data-frame-state="${field}">Loading cross-origin iframe :4174</small>
+      <div class="frame-meta">
+        <span class="frame-badge">iframe</span>
+        <code>127.0.0.1:4174</code>
+        <small data-frame-state="${field}">loading</small>
+      </div>
     </div>
   `;
 }
@@ -429,6 +433,10 @@ function paymentElement() {
       </div>
 
       ${state.method === "card" ? `
+        <div class="iframe-boundary-note">
+          <code>&lt;iframe&gt;</code>
+          <span>Three child documents from the secure-field origin</span>
+        </div>
         <div class="hosted-fields ${isBlocked ? "is-disabled" : ""}">
           ${secureFieldFrame("number", "Card number", true)}
           ${secureFieldFrame("expiry", "Expiry")}
@@ -804,8 +812,8 @@ function refreshFieldUi() {
       status.textContent = fieldState.errorCode
         ? fieldState.errorCode
         : fieldState.complete
-          ? "Ready - parent received complete=true"
-          : "Cross-origin iframe loaded";
+          ? "ready / complete=true"
+          : "ready / complete=false";
     }
   });
 
