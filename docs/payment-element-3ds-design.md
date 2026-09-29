@@ -42,31 +42,50 @@ The 3DS layer adds action presentation, action lifecycle events, return correlat
 
 ## End-to-end flow
 
-```text
-Buyer browser       Merchant backend       Payment platform       Acquirer / 3DS
-      |                     |                      |                       |
-      | checkout            |                      |                       |
-      |-------------------->| create session       |                       |
-      |                     |--------------------->| authenticate merchant |
-      |                     |<-- client_secret ----|                       |
-      |<-- client_secret ---|                      |                       |
-      | mount element       |                      |                       |
-      |------------------------------------------->| load session          |
-      | enter card          |                      |                       |
-      | confirm()           |                      |                       |
-      |------------------------------------------->| submit same attempt   |
-      |                                            |---------------------->|
-      |                                            |<-- frictionless or ---|
-      |                                            |    challenge action    |
-      |<========== issuer-controlled authentication experience ==========>|
-      |                                            |                       |
-      |<-------------------------------------------| authorized/captured/  |
-      |                                            | processing            |
-      |                     |<-- signed webhook ---|                       |
-      | return/status page  |                      |                       |
-      |-------------------->| retrieve status      |                       |
-      |                     |--------------------->|                       |
-      |<-- trusted result --|<-- payment status ---|                       |
+```mermaid
+sequenceDiagram
+    actor Buyer
+    participant Browser as Merchant browser
+    participant Backend as Merchant backend
+    participant Platform as Payment platform
+    participant Processor as Acquirer and 3DS
+
+    Browser->>Platform: confirm existing Checkout Session
+    Platform->>Platform: Persist payment attempt and correlation
+    Platform->>Processor: Submit card payment
+
+    alt Frictionless authentication
+        Processor-->>Platform: Authentication result
+        Platform->>Processor: Resume same payment attempt
+        Processor-->>Platform: Authorization and capture result
+        Platform-->>Browser: authorized, captured or processing
+    else Embedded or popup challenge
+        Processor-->>Platform: Challenge required
+        Platform-->>Browser: Present issuer-controlled challenge
+        Buyer->>Browser: Complete, cancel or abandon challenge
+        Browser->>Processor: Challenge interaction
+        Processor-->>Platform: Authentication result
+        Platform->>Processor: Resume same payment attempt
+        Processor-->>Platform: Authorization and capture result
+        Platform-->>Browser: Result when browser context survives
+    else Full-page redirect or bank-app handoff
+        Processor-->>Platform: Redirect required
+        Platform-->>Browser: Navigate to authentication
+        Buyer->>Processor: Complete, cancel or abandon authentication
+        Processor-->>Platform: Authentication and payment result
+        Note over Browser,Platform: Original confirm promise may never resolve
+    end
+
+    par Signed webhook
+        Platform-->>Backend: Authenticated payment event
+        Backend->>Backend: Persist, deduplicate and apply effects once
+    and Browser return when available
+        Browser->>Backend: Opaque session reference
+        Backend->>Backend: Authorize buyer against bound order
+        Backend->>Platform: GET authoritative status
+        Platform-->>Backend: authorized, captured, processing or failed
+        Backend-->>Browser: Authorized buyer result
+    end
 ```
 
 The webhook and browser return may arrive in either order, and the browser may never return. Both paths call the merchant's same idempotent order-update or fulfillment logic.

@@ -154,6 +154,56 @@ Minimum supporting server endpoints are:
 
 Manual capture, cancellation and refund APIs are adjacent payment operations rather than browser SDK features. Their detailed contracts are outside this document, but they use merchant server authentication, ownership checks and persistent idempotency keys.
 
+## End-to-end sequence
+
+```mermaid
+sequenceDiagram
+    actor Buyer
+    participant Browser as Merchant browser
+    participant Backend as Merchant backend
+    participant Platform as Payment platform
+    participant Processor
+
+    Buyer->>Browser: Start checkout
+    Browser->>Backend: Request checkout for current order
+    Backend->>Backend: Validate buyer, cart and total
+    Backend->>Platform: POST /v1/checkout-sessions
+    Note over Backend,Platform: Bearer secret or scoped OAuth token
+    Platform-->>Backend: Session ID and client secret
+    Backend-->>Browser: Public key and client secret
+    Browser->>Platform: Initialize checkout and mount element
+    Platform-->>Browser: Eligible methods and secure fields
+
+    Buyer->>Browser: Submit payment
+    Browser->>Platform: confirm
+    Platform->>Processor: Authorize and optionally capture
+    Processor-->>Platform: Payment result
+
+    alt Captured
+        Platform-->>Browser: captured
+        Platform-->>Backend: Signed payment webhook
+    else Authorized for manual capture or capture retry
+        Platform-->>Browser: authorized with capture state
+        Platform-->>Backend: Signed authorization webhook
+    else Delayed or unknown outcome
+        Platform-->>Browser: processing
+        Platform-->>Backend: Signed outcome webhook when resolved
+    else Definitive failure
+        Platform-->>Browser: failed with stable error
+        Platform-->>Backend: Signed failure webhook
+    end
+
+    opt Browser return or result refresh
+        Browser->>Backend: Session reference
+        Backend->>Backend: Authorize buyer against bound order
+        Backend->>Platform: GET authoritative status
+        Platform-->>Backend: Payment and session status
+        Backend-->>Browser: Authorized buyer result
+    end
+```
+
+The browser response and signed webhook are independent. Either may arrive first, and the browser may disappear. The merchant backend applies order effects through one idempotent path regardless of which trusted signal triggers it.
+
 ## Browser SDK
 
 ### Vanilla TypeScript
