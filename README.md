@@ -111,5 +111,7 @@ CAPTURE 用 `booking_fx_rate`（请款→结算）换汇入账，不是锁汇。
 | [行业引用](docs/industry-references.md) | 外部资料 |
 | [Hosted payment page research](docs/hosted-payment-page-research.md) | 托管支付页功能、商户集成建议与来源；研究建议，非现行 ADR |
 | [Payment SDK / iframe / plugin survey](docs/payment-integration-design-survey.md) | 主流支付集成的开发体验、SDK 与 iframe 技术设计、商城插件架构；研究建议 |
+| [Payment Element SDK design](docs/payment-element-design.md) | 嵌入式多支付方式组件、商户认证、Checkout Session、浏览器 SDK 与事件契约；提案，非现行 ADR |
+| [Payment Element 3DS design](docs/payment-element-3ds-design.md) | 建立在基础 Payment Element SDK 之上的 3DS 动作编排、回跳恢复与状态边界；提案，非现行 ADR |
 
 历史叙述（清算长文、信息流、整本复式分录等）在 [docs/archive/](docs/archive/)，**不要当现行规则**。
