@@ -375,6 +375,183 @@ Only necessary non-sensitive state crosses to the merchant page: completeness, s
 
 Publish required `script-src`, `frame-src`, `connect-src`, wallet Permissions Policy and return-navigation behavior. Do not prescribe an outer iframe, sandbox flags or cross-origin isolation without method-specific browser testing.
 
+## PSP backend architecture
+
+The PSP backend is the authoritative control plane and payment orchestration layer behind the public merchant API and browser runtime. It authenticates every caller, owns Checkout Session and payment-attempt state, translates processor-specific behavior into the public contract, and emits durable facts to merchant webhooks and downstream clearing. It does not trust the browser, calculate the merchant's cart, or write wallet balances directly.
+
+### Service boundaries
+
+```mermaid
+flowchart LR
+    Merchant[Merchant backend] --> Edge[API gateway]
+    Browser[Merchant browser] --> Edge
+    Processor[Processor / acquirer] --> Inbound[Provider webhook ingress]
+
+    Edge --> Auth[Credential and capability service]
+    Edge --> Session[Checkout Session service]
+    Edge --> Runtime[Payment Element runtime]
+    Runtime --> Orchestrator[Payment orchestrator]
+    Session --> Orchestrator
+    Orchestrator --> Adapter[Processor adapter]
+    Adapter --> Processor
+    Inbound --> Adapter
+
+    Auth --> Primary[(Primary transactional store)]
+    Session --> Primary
+    Orchestrator --> Primary
+    Adapter --> Primary
+    Primary --> Outbox[Transactional outbox]
+    Outbox --> MerchantHooks[Merchant webhook delivery]
+    Outbox --> Clearing[Transaction and clearing consumer]
+    Outbox --> Reconcile[Reconciliation workers]
+    Clearing --> Ledger[Ledger and wallet services]
+
+    Config[Merchant and payment-method configuration] --> Session
+    Config --> Runtime
+    Config --> Orchestrator
+    Vault[Token vault / controlled payment origin] --> Orchestrator
+    KMS[KMS and secret manager] --> Auth
+    KMS --> Adapter
+    KMS --> MerchantHooks
+```
+
+| Component | Owns | Must not own |
+|---|---|---|
+| API gateway | TLS termination, request limits, API version routing, request IDs and coarse abuse controls | Merchant identity inferred from body fields; payment state transitions |
+| Credential and capability service | API-key verification, OAuth validation, browser capability verification, principal and scope resolution | Checkout totals or processor decisions |
+| Checkout Session service | Immutable order snapshot, expiry/replacement, allowed origins and public status projection | Raw payment credentials; merchant fulfillment state |
+| Payment Element runtime | Eligible-method bootstrap, frame configuration and browser-safe confirmation API | Merchant secret credentials; authoritative ledger state |
+| Payment orchestrator | One logical attempt, action continuation, timeout classification and normalized payment result | PAN/CVC storage; direct balance mutation |
+| Processor adapters | Provider authentication, request/response translation, provider idempotency and signature verification | Public cross-provider policy; string-based mutation of core state |
+| Provider webhook ingress | Raw-body verification, durable receipt and duplicate suppression before acknowledgement | Merchant webhook delivery or synchronous fulfillment |
+| Merchant webhook delivery | Signed event envelopes, retry schedule, delivery evidence and replay tooling | Inventing new payment state from delivery outcomes |
+| Reconciliation workers | Querying unresolved attempts, importing provider reports and detecting mismatches | Blindly repeating an uncertain authorization against another processor |
+| Transaction, clearing and ledger consumers | ADR-defined transaction transitions, clearing at `CAPTURED`, immutable balance movements and ledger entries | Browser session state or provider callback interpretation |
+
+These are logical ownership boundaries, not a requirement for one deployable per row. A first implementation may combine the Session service, runtime and orchestrator in one application if their persistence and authorization boundaries remain explicit. Provider webhook ingress and background delivery should still be independently scalable because they have different availability and latency profiles from interactive confirmation.
+
+### Authentication and authorization path
+
+The edge passes the credential material and request context to the credential service. The credential service returns an internal principal such as:
+
+```ts
+type RequestPrincipal = {
+  subjectType: "merchant_credential" | "oauth_grant" | "browser_capability";
+  subjectId: string;
+  merchantId: string;
+  environment: "test" | "live";
+  scopes: string[];
+  submerchantId?: string;
+  credentialVersion: number;
+};
+```
+
+No downstream service accepts `merchant_id`, environment or scopes from an unverified request body or browser claim. Internal calls carry the resolved principal over authenticated service-to-service transport and repeat resource-ownership checks at the owning service.
+
+Server bearer secrets contain a non-secret lookup prefix and high-entropy secret material. Store a one-way verifier, or an encrypted value only when protocol requirements make recovery necessary. OAuth access tokens are validated for issuer, audience, expiry, grant revocation, merchant binding and scopes. Test and live issuers, keys and resources remain isolated. Rotation supports an overlap window, while revocation takes effect immediately at the authorization layer.
+
+The browser `client_secret` follows the same lookup-plus-verifier pattern but resolves only to one Checkout Session capability. Verification checks public key, merchant, environment, operation, expiry, replacement state and exact configured origin before the runtime returns session configuration or accepts confirmation. Rate limiting and origin checks reduce abuse but do not replace capability verification. Logs and traces record only credential IDs and redacted token fingerprints.
+
+### Core records
+
+| Record | Required durable fields | Key constraints |
+|---|---|---|
+| `merchant_credential` | credential ID, merchant, environment, verifier/key reference, scopes, status, created/rotated/revoked timestamps | Secret value never appears in logs; test/live cannot cross |
+| `oauth_grant` | grant subject, connected merchant, scopes, issuer, status and expiry | Merchant is derived from the grant, not request payload |
+| `checkout_session` | session ID, merchant, order reference/version, amount/currency, capture mode, return URL, allowed origins, expiry, replacement and public statuses | Immutable monetary snapshot; one active replacement chain |
+| `browser_capability` | capability ID, session ID, verifier, permitted operations, expiry and revocation | Cannot authorize administration or another session |
+| `payment_attempt` | attempt ID, session ID, selected method, normalized state, processor route, transaction ID, action state, failure category and timestamps | One logical submission key; terminal state cannot regress |
+| `provider_operation` | attempt ID, operation kind, provider idempotency key, request fingerprint, provider reference, outcome class and retry/reconciliation timestamps | Unique by provider, merchant scope and logical operation |
+| `provider_event` | provider event ID/type, provider account, verified receipt time, payload reference, processing state and linked attempt | Persist before acknowledgement; duplicate event IDs do not reapply effects |
+| `outbox_event` | event ID/type/version, aggregate ID/version, payload reference and creation time | Inserted in the same transaction as the state change |
+| `webhook_delivery` | endpoint, event ID, signing-key version, attempt count, next attempt, response class and terminal delivery state | Delivery retries never create a new event |
+| `idempotency_record` | merchant, environment, operation, key, canonical request hash, response reference and retention deadline | Same key plus different payload is rejected |
+
+Store these records in a strongly consistent transactional database. A queue transports work but is not the source of truth. A cache may hold public configuration, rate-limit counters and short leases, but loss of the cache must not permit a duplicate logical attempt or erase an outcome. Encrypt sensitive provider evidence with KMS-managed keys, restrict operator access, and apply explicit retention and deletion policy. Raw PAN and CVC belong only in the compliant payment-origin/token-vault path and never in these records.
+
+### Session creation and runtime bootstrap
+
+For `POST /v1/checkout-sessions`, the Session service:
+
+1. Resolves and authorizes the merchant principal and validates account/capability status.
+2. Canonicalizes the request and claims the merchant-scoped idempotency key.
+3. Validates amount, currency, capture mode, method constraints, return URL and configured origins.
+4. Writes the immutable session, browser-capability verifier and a short-lived encrypted idempotent response envelope in one database transaction.
+5. Returns the client secret. An exact idempotent replay within the documented retention window returns the original response and secret; it never generates a second capability. Normal session retrieval never returns the secret.
+
+Runtime bootstrap accepts the public key and client secret, then returns only browser-safe data: session display amounts, eligible methods, locale, frame URLs, appearance constraints, capability expiry and protocol versions. Method eligibility is a deterministic evaluation over merchant configuration, environment, amount/currency, capture mode, buyer/browser signals that are safe to use, and current provider availability. The response includes a reason code for method suppression in test diagnostics but does not expose private risk or routing rules to live browsers.
+
+### Confirmation and payment orchestration
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Edge as API gateway
+    participant Auth as Capability service
+    participant Pay as Payment orchestrator
+    participant DB as Transactional store
+    participant Adapter as Processor adapter
+    participant Processor
+    participant Outbox
+
+    Browser->>Edge: confirm(session capability, method reference, submission key)
+    Edge->>Auth: Verify capability, origin and operation
+    Auth-->>Edge: Browser principal
+    Edge->>Pay: Confirm with verified principal
+    Pay->>DB: Claim submission and create attempt + PAYING transaction
+    Pay->>Adapter: Authorize/capture using stable provider operation key
+    Adapter->>Processor: Provider request
+    Processor-->>Adapter: Result, action or timeout
+    Adapter-->>Pay: Normalized outcome plus provider evidence reference
+    Pay->>DB: Apply guarded transition and append outbox events
+    DB-->>Outbox: Committed events become publishable
+    Pay-->>Browser: authorized, captured, processing, failed or action
+```
+
+The orchestrator claims a merchant/session-scoped submission key before contacting a processor. Concurrent confirms for the same logical submission return the existing attempt or a conflict; they do not create parallel authorizations. The attempt and provider operation are persisted before the external call. Each processor request uses a stable provider idempotency key derived from the local operation, never from a transient worker execution.
+
+Adapters return normalized outcomes: definitive success, definitive failure, buyer action required, pending, or unknown. They preserve provider codes and evidence in restricted fields but cannot directly set arbitrary public or transaction states. A guarded transition function validates current state, operation kind, amount and provider evidence before writing the next attempt/Transaction state and its outbox records atomically.
+
+An action such as 3DS pauses the same attempt and stores only opaque action references, expiry and continuation state. The separate [Payment Element 3DS design](payment-element-3ds-design.md) defines challenge behavior. Action completion never creates a fresh payment attempt unless policy has definitively closed the prior attempt.
+
+If the processor times out after submission, the operation becomes unknown and the session remains locked against blind resubmission. The reconciler queries the processor with the original reference/idempotency key. Only a definitive failed or expired outcome allows policy to open a new attempt. Provider failover before resolution is prohibited because two processors could both authorize.
+
+### Provider callbacks and reconciliation
+
+Each provider adapter owns callback authentication for its provider account and environment. Ingress reads the unmodified body, verifies signature/timestamp or mTLS as required, derives the configured provider account rather than trusting a payload merchant field, and writes the receipt before returning success. Unsupported, invalid or cross-environment callbacks fail closed and create a security signal without changing payment state.
+
+Background processing links the provider reference to one local operation, normalizes the event, and invokes the same guarded transition function used by synchronous responses. Duplicate and reordered events are safe: provider-event deduplication prevents repeated processing, aggregate version checks prevent state regression, and downstream consumers independently deduplicate `outbox_event.event_id` and business-effect keys.
+
+Reconciliation runs for unknown and long-pending operations, missed-webhook detection, and provider report imports. It records what evidence resolved the operation and emits a correction event through the same outbox path. Operator tools may trigger a query or replay existing evidence; they must not edit terminal state directly.
+
+### Merchant events and downstream accounting
+
+Every externally visible state transition appends a versioned outbox event in the same commit. Merchant webhook workers render a stable public event, sign the timestamp and raw body with the endpoint's active key version, and retry with backoff until the documented horizon. Event creation, endpoint delivery and merchant business effects have separate identities and deduplication keys. Endpoint failure does not roll back or alter a payment.
+
+Payment events also feed the existing Transaction and clearing boundary:
+
+- authorization evidence transitions the Transaction to `PAID`;
+- successful capture transitions it to `CAPTURED` and emits the idempotent clearing command;
+- clearing computes balance movements and immutable ledger entries once, placing merchant net funds in `pending`;
+- processor/acquirer funding evidence is an upstream `SETTLEMENT` movement and does not set Transaction `SETTLED`;
+- the downstream merchant settlement process alone transitions `CAPTURED` to `SETTLED` and moves funds from `pending` to `available`.
+
+These rules follow [ADR 0003](adr/0003-transaction-status-model.md) and [ADR 0005](adr/0005-ledger-invariants.md). Browser results, merchant webhook delivery, provider labels and reconciliation jobs cannot bypass them.
+
+### Reliability, security and observability
+
+- Use database uniqueness and compare-and-set aggregate versions for correctness; distributed locks are only an optimization.
+- Commit state and outbox rows together. Consumers acknowledge only after their own durable idempotent effect.
+- Put total deadlines on interactive calls. Retry only operations whose provider contract and stable idempotency key make retry safe.
+- Partition queues by aggregate where useful, but remain correct under duplicate and out-of-order delivery.
+- Run expiry, unknown-outcome, missing-webhook, delivery and reconciliation workers from durable schedules with visible lag and dead-letter handling.
+- Keep test/live databases, queues, provider accounts, signing keys and public hosts isolated.
+- Use mTLS or workload identity between services; grant adapters and delivery workers only the secrets they require.
+- Redact authorization headers, client secrets, payment credentials, device data and raw callback payloads from ordinary logs. Restricted evidence storage has separate access auditing.
+- Correlate `request_id`, credential ID, merchant, session, attempt, Transaction, provider operation, provider event, outbox event and webhook delivery without logging secret values.
+- Measure confirmation latency by phase, processor timeout/unknown rate, unresolved-attempt age, duplicate suppression, callback verification failures, outbox lag, webhook success/age, reconciliation mismatches and clearing failures.
+- Alert on state-age and invariant violations, not only HTTP error rate. Provide operator runbooks for query, evidence replay, endpoint replay and credential revocation.
+
 ## Prototype scope
 
 The first prototype evaluates SDK developer experience inside a realistic merchant checkout. It uses mock fields and an in-memory scenario engine; it does not claim real iframe isolation, processor behavior or PCI compliance.
@@ -414,6 +591,13 @@ Base scenarios:
 - Redirect/page loss and asynchronous outcomes are recoverable through status retrieval and webhooks.
 - A substituted session reference cannot reveal another buyer's order or trigger effects for a browser-supplied order ID.
 - Duplicate or reordered webhook and return processing applies each business effect once.
+- Server and browser credentials resolve to an internal merchant/environment principal; downstream services do not trust body-supplied ownership fields.
+- Session creation, idempotent response and browser capability are committed atomically.
+- Confirmation persists a logical attempt and stable provider operation key before contacting a processor.
+- A timeout after processor submission locks blind retry and routes the same operation to reconciliation.
+- Synchronous responses and verified provider callbacks use the same guarded transition function.
+- Payment state changes and outbox events commit atomically; webhook delivery failure cannot change payment state.
+- `PAID`, `CAPTURED`, upstream funding and downstream `SETTLED` remain distinct, and only the ledger boundary moves balances.
 - Disallowed return destinations and stale or forged frame messages are rejected.
 - React Strict Mode and route unmount do not duplicate initialization or leave live frames/listeners.
 - Browser completion cannot post ledger entries, move funds to `available` or trigger fulfillment without trusted server evidence.
