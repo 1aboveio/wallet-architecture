@@ -380,67 +380,159 @@ https://shop.example/payments/return?checkout_session=cs_01J...
 
 三条保证合起来的效果：**返回页展示的状态，一定是当前买家自己那笔订单的真实状态。**
 
-### 3.4 安全 frame 边界
+### 3.4 安全 frame 边界（iframe 的 JS 实现）
 
-敏感字段（卡号、有效期、CVC）运行在平台支付域的跨域 iframe 里。商户页面只能通过 `postMessage` 协议与它们通信。安全要求配合四段代码用例说明。
+敏感字段（卡号、有效期、CVC）运行在平台支付域的跨域 iframe 里。商户页面与 iframe 只通过 `postMessage` 通信。本节按 iframe 的生命周期给出 JS 实现细节：创建 → 握手 → 发送 → 接收 → 取数 → resize → 销毁。代码与仓库原型一致（`prototypes/payment-element/secure-field.js`、`app.js`）；原型是演示实现，不代表合规边界已获证明。
 
-**① 消息格式：只传非敏感状态**
-
-```ts
-// frame 允许发给商户页的消息类型。击键、PAN、CVC、认证密钥永远不在其中
-type FrameMessage =
-  | { type: "ready" }
-  | { type: "change"; complete: boolean; validation: string[]; paymentMethod: string }
-  | { type: "focus" }
-  | { type: "blur" }
-  | { type: "resize"; height: number }
-  | { type: "loaderror"; code: string; requestId: string };
-```
-
-**② frame 内部：严格校验每一条收到的消息**
+**① 消息协议：信封与消息类型**
 
 ```ts
-// 受控支付域内的安全字段（frame 内）
-window.addEventListener("message", (event) => {
-  // 精确 origin 比较，不是前缀匹配
-  if (event.origin !== EXPECTED_PARENT_ORIGIN) return;
-  // 只接受父窗口发来的消息
-  if (event.source !== window.parent) return;
-  // schema 校验：结构不对直接丢弃
-  const msg = parseFrameMessage(event.data);
-  if (!msg) return;
-  // 协议版本与实例必须匹配；销毁后到达的陈旧消息拒绝
-  if (msg.protocolVersion !== PROTOCOL_VERSION) return;
-  if (msg.instanceId !== myInstanceId) return;
-  if (destroyed) return;
+// 所有 frame 消息的公共信封（原型协议名 walletpay.fields.v1）
+interface FrameEnvelope {
+  protocol: "walletpay.fields.v1"; // 协议版本，不匹配即丢弃
+  instanceId: string;              // 本次挂载的实例 ID
+  type: "field.ready" | "field.change" | "field.focus" | "field.blur";
+  field: "number" | "expiry" | "cvc";
+}
 
-  handleMessage(msg);
-});
+// field.ready / field.change 的载荷：只有完整性与校验码
+interface FieldState {
+  complete: boolean;
+  errorCode: string | null; // 例如 "incomplete_number"
+}
+// 击键值、PAN、CVC、认证密钥永远不在消息里
 ```
 
-**③ SDK 父页：发消息必须指定精确 targetOrigin**
+**② 创建：每个敏感字段一个 iframe**
 
 ```ts
-frame.contentWindow!.postMessage(
-  { protocolVersion: 1, instanceId, type: "submit" },
-  "https://payments.walletpay.example", // 精确 targetOrigin，不能用 "*"
-);
+// 父页（SDK）：一字段一框。实例 ID 从创建起贯穿所有消息
+function createSecureField(field: string, instanceId: string): HTMLIFrameElement {
+  const frame = document.createElement("iframe");
+  frame.src = `https://payments.walletpay.example/field.html?field=${field}&instance=${instanceId}`;
+  frame.title = `${field} secure payment field`;
+  frame.loading = "eager";
+  frame.dataset.field = field;   // 接收消息时按它找对应窗口
+  hostEl.appendChild(frame);     // 布局由容器样式负责
+  return frame;
+}
 ```
 
-**④ resize 有界，防止循环和滥用**
+一字段一框便于与商户表单逐项对齐样式和焦点顺序；单框多字段能省连接，但隔离面更大。原型取一字段一框。
+
+**③ 握手：就绪前禁用提交**
+
+```ts
+// frame 侧：初始化完成后上报一次状态
+emit("field.ready", fieldState());
+
+// 父页侧：全部字段 ready 才允许 Pay；超时按 loaderror 处理
+const ready = new Map(fields.map((f) => [f, false]));
+const timer = setTimeout(() => {
+  if ([...ready.values()].some((v) => !v)) {
+    onLoadError({ code: "load_error", requestId: crypto.randomUUID() });
+  }
+}, 10_000);
+```
+
+**④ 发送：精确 targetOrigin + 请求/响应关联**
+
+```ts
+const pending = new Map<string, Pending>();
+
+function request(frame: HTMLIFrameElement, msg: object, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      pending.delete(requestId);
+      reject(new Error("frame timeout"));
+    }, timeoutMs);
+    pending.set(requestId, { resolve, reject, timer });
+    // 精确 targetOrigin，不能用 "*"；信封字段由 SDK 补齐
+    frame.contentWindow!.postMessage(
+      { protocol: "walletpay.fields.v1", instanceId, requestId, ...msg },
+      "https://payments.walletpay.example",
+    );
+  });
+}
+```
+
+**⑤ 接收：五层校验（含原型污染防护）**
+
+```ts
+function onMessage(messageEvent: MessageEvent) {
+  // 1) 精确来源；载荷必须是普通对象（防 __proto__ / constructor 注入）
+  if (messageEvent.origin !== "https://payments.walletpay.example") return;
+  const data = messageEvent.data;
+  if (!data || Object.getPrototypeOf(data) !== Object.prototype) return;
+  // 2) 协议、实例、字段名、消息类型白名单
+  if (data.protocol !== "walletpay.fields.v1") return;
+  if (data.instanceId !== instanceId) return;
+  if (!["number", "expiry", "cvc"].includes(data.field)) return;
+  if (!["field.ready", "field.change", "field.focus", "field.blur"].includes(data.type)) return;
+  // 3) 严格键集校验：不多一个键，也不少一个键
+  const isState = data.type === "field.ready" || data.type === "field.change";
+  const expected = isState
+    ? ["protocol", "instanceId", "type", "field", "complete", "errorCode"]
+    : ["protocol", "instanceId", "type", "field"];
+  const keys = Object.keys(data);
+  if (keys.length !== expected.length || !expected.every((k) => keys.includes(k))) return;
+  // 4) 必须来自该字段对应的那个 frame 窗口
+  const frame = document.querySelector(`iframe[data-field="${data.field}"]`);
+  if (!frame || messageEvent.source !== frame.contentWindow) return;
+  // 5) 语义校验
+  if (isState) {
+    if (typeof data.complete !== "boolean") return;
+    if (data.errorCode !== null && data.errorCode !== `incomplete_${data.field}`) return;
+    if (data.complete && data.errorCode !== null) return;
+  }
+  if (destroyed) return; // 销毁后迟到的消息在这里被拒绝
+  applyFieldState(data);
+}
+window.addEventListener("message", onMessage);
+```
+
+**⑥ confirm 取数：只回 token，不回卡号**
+
+```ts
+// 父页：confirm 时向字段 frame 请求采集结果
+const { token } = await request(frame, { type: "collect" });
+
+// frame 内部：读自己的输入框 → 调平台 tokenize → 只回 { token }
+// 原始 PAN / CVC 只存在于 frame 的 JS 内存，永不出边界
+```
+
+**⑦ resize：有界、单向**
 
 ```ts
 const MIN_HEIGHT = 40;
 const MAX_HEIGHT = 800;
 
-function applyResize(msg: { type: "resize"; height: number }) {
+function applyResize(msg: { height: number }) {
   // 高度夹在合法区间；单向设置，不因 frame 的回声再触发调整
   const h = Math.min(Math.max(msg.height, MIN_HEIGHT), MAX_HEIGHT);
   frame.style.height = `${h}px`;
 }
 ```
 
-配套要求：frame 协议带协议版本、实例 ID、消息类型、请求/关联 ID；销毁或重挂后陈旧消息一律拒绝。对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
+**⑧ 销毁：陈旧消息与在途请求一并清掉**
+
+```ts
+function destroy() {
+  destroyed = true;
+  window.removeEventListener("message", onMessage);
+  clearTimeout(timer);
+  frames.forEach((f) => f.remove());
+  pending.forEach(({ reject, timer }) => {
+    clearTimeout(timer);
+    reject(new Error("destroyed"));
+  });
+  pending.clear();
+  // destroy 之后到达的任何消息在 ⑤ 的 destroyed 检查处被拒绝
+}
+```
+
+配套要求：对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为；frame 地址由平台配置，不可被商户替换。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
 
 ## 4. 服务端认证模型（服务间认证）
 
