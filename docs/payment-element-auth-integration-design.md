@@ -5,8 +5,8 @@
 ## 写给谁看
 
 - 你是**支付平台的工程师或设计评审者**。
-- 你已经了解商户侧的接入形状。新手向的商户视角见 [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)。
-- **本文自成一体。** 本文吸收了原英文设计文档、3DS 设计与 ADR 0003/0005 的相关内容，是该设计的权威说明。读本文不需要翻阅其他文档，文末链接仅是延伸阅读。
+- 你已经了解商户侧的接入形态。面向新手的商户视角见 [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)。
+- **本文自成一体。** 它吸收了原英文设计文档、3DS 设计与 ADR 0003/0005 的相关内容，是该设计的权威说明；读它不需要翻阅其他文档，文末链接仅供延伸阅读。
 
 本文回答四个设计问题：
 
@@ -20,11 +20,11 @@
 约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。实现清单在[附录 C 关键接口清单](#附录-c-关键接口清单)。
 ## 1. 整体时序与状态机
 
-先看两条端到端链路。两图中 3DS 流程**折叠为一步**，只省略图内细节。3DS 由 PaymentElement 自己实现，实现分工与分支见 §2。后面的章节解释图里的其他机制。
+先看两条端到端链路。两图中 3DS 流程**折叠为一步**，只是省略了图内细节。3DS 由 PaymentElement 自己实现，实现分工与分支见 §2。后面的章节解释图里的其他机制。
 
 ### 1.1 纯授权（无 3DS 持卡人认证）
 
-以 `capture_mode: "manual"` 为例（只支付授权）。`automatic` 时平台在授权同一环节发起请款，结果直接 `captured`，后续清分路径相同。
+以 `capture_mode: "manual"` 为例（只做支付授权）。`automatic` 时平台在授权同一环节发起请款，结果直接 `captured`，后续清分路径相同。
 
 ```mermaid
 sequenceDiagram
@@ -79,11 +79,11 @@ sequenceDiagram
     Note over Backend: webhook 与返回页共用同一幂等订单更新函数<br/>PAID → CAPTURED → SETTLED 只走清分/结算边界
 ```
 
-浏览器应答与签名 webhook 互相独立。两者谁先到都可以。浏览器可能消失。商户后端必须用同一个幂等路径应用业务效果。
+浏览器应答与签名 webhook 互相独立，谁先到都可以；浏览器还可能消失。商户后端必须用同一个幂等路径应用业务效果。
 
 ### 1.2 认证 + 授权（3DS 折叠为一步）
 
-商户代码不变，仍是 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt，完成后**恢复同一 attempt** 继续支付授权。下图把 3DS 流程折叠为一步（实现分工见 §2.1，分支见 §2.2）；
+商户代码不变，仍是 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt，完成后**恢复同一 attempt** 继续支付授权。下图把 3DS 流程折叠为一步（实现分工见 §2.1，分支见 §2.2）。
 
 ```mermaid
 sequenceDiagram
@@ -157,13 +157,13 @@ Transaction 与钱包两行的权威语义（吸收自 ADR 0003 / ADR 0005）：
 
 ## 2. 3DS 流程（单独呈现）
 
-本章展开 §1.2 折叠掉的持卡人认证流程：谁实现、怎么实现、商户对接什么。3DS 只向发卡行证明持卡人身份。它不认证商户、不证明请款、不授权发货、不决定钱包结算。
+本章展开 §1.2 折叠掉的持卡人认证流程：谁来实现、怎么实现、商户要对接什么。3DS 只向发卡行证明持卡人身份，不认证商户、不证明请款、不授权发货，也不决定钱包结算。
 
 ### 2.1 谁实现 3DS？商户对接什么？
 
 **Q：3DS 验证流程要在 PaymentElement 里实现吗？**
 
-**要。** 3DS 是 PaymentElement 的内部能力，由平台实现，不需要商户实现。实现分两层：
+**要。** 3DS 是 PaymentElement 的内部能力，由平台实现，商户不需要实现。实现分两层：
 
 | 层 | 职责 |
 | --- | --- |
@@ -257,7 +257,7 @@ confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured
 
 **导航权限：谁能跳转、能跳到哪**
 
-“跳转”只能是**整页导航**。“在 div 里跳转”不存在——整页跳转替换的是整个顶层页面（地址栏都会变），组件容器随页面一起被替换。div 里能做的只是**内嵌呈现**：把发卡行验证框加载进容器内的 iframe / 模态。发卡行页面常用 `X-Frame-Options` 或 CSP `frame-ancestors` 禁止被嵌入，所以内嵌不可用时才退到弹窗或整页跳转。
+“跳转”只能是**整页导航**。“在 div 里跳转”不存在——整页跳转替换的是整个顶层页面（地址栏都会变），组件容器随页面一起被替换。div 里能做的只是**内嵌呈现**：把发卡行验证框加载进容器内的 iframe / 模态。发卡行页面常用 `X-Frame-Options` 或 CSP `frame-ancestors` 禁止被嵌入，只有内嵌不可用时才退到弹窗或整页跳转。
 
 | 谁 | 能做什么 | 怎么限制 |
 | --- | --- | --- |
@@ -268,7 +268,7 @@ confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured
 
 商户主页面被整页跳转是**预期行为**，不是缺陷：跳转前 `actionstart`（type: `"redirect"`）先触发，给商户锁界面的机会；跳转后原页面销毁，收口靠 §3.3 与 §4.2。若商户不接受整页导航，应在配置里只启用内嵌 / 弹窗模式（平台按发卡行支持能力降级）。
 
-对应四种权限的实现样例。**所有代码都运行在父页面（商户页）的 JS 上下文里**。先看父页面的骨架和 confirm 响应的总分派，样例 1–3 是被它调用的分支：
+对应四种权限的实现样例。**所有代码都运行在父页面（商户页）的 JS 上下文里**。先看父页面的骨架和 confirm 响应的总分派，样例 1–3 是由它调用的分支：
 
 ```html
 <!-- 父页面（商户页）骨架 -->
@@ -410,7 +410,7 @@ checkout.on("actionend", ({ type, outcome }) => {
 
 ### 3.1 决策与威胁模型
 
-浏览器持有两个凭证。两个都不是密钥：
+浏览器持有两个凭证，两者都不是密钥：
 
 ```ts
 const walletPay = await loadWalletPay({
@@ -433,7 +433,7 @@ const checkout = await walletPay.createCheckout({
 - **公钥 `pk_`（publishable merchant identifier）**：公开值，可出现在前端代码。它只选择公开配置（可用支付方式、locale、外观约束、frame 地址）。它**不授权任何支付操作**，泄露无害。
 - **`client_secret`（会话能力凭证）**：由商户后端在创建 Checkout Session 时获得，只返回给需要它的那一个买家上下文。它授权**对单个 Checkout Session 的有限操作**（初始只有 `confirm`）。它是 bearer capability，泄露有界但按敏感值对待。
 
-平台校验公钥与 `client_secret` 解析到**同一商户、同一环境**（test/live 不可交叉）。浏览器凭证与服务端凭证共用 credential service 的「查找前缀 + verifier」模式，但只解析出一个会话级 capability。不用 cookie 会话的原因：SDK 要跨站嵌入商户页和 WebView，cookie 语义与 CSRF 面都不合适。
+平台校验公钥与 `client_secret` 解析到**同一商户、同一环境**（test/live 不可交叉）。浏览器凭证与服务端凭证共用 credential service 的「查找前缀 + verifier」模式，但只解析出一个会话级 capability。不使用 cookie 会话的原因：SDK 要跨站嵌入商户页和 WebView，cookie 语义与 CSRF 面都不合适。
 
 ### 3.2 能力凭证的绑定与验证路径
 
@@ -449,7 +449,7 @@ const checkout = await walletPay.createCheckout({
 | 过期时间与替换状态 | 购物车变更后旧凭证继续可用 |
 | 确认提交策略 | 重复提交造成平行授权 |
 
-明确禁止：会话能力凭证**不得**授权金额变更、跨商户操作、capture/refund 管理、任意客户数据读取、创建新会话。它不得进入 URL、持久化存储、埋点、日志。
+明确禁止：会话能力凭证**不得**授权金额变更、跨商户操作、capture/refund 管理、任意客户数据读取或创建新会话；也不得进入 URL、持久化存储、埋点、日志。
 
 实现约束：
 
@@ -466,7 +466,7 @@ const checkout = await walletPay.createCheckout({
 https://shop.example/payments/return?checkout_session=cs_01J...
 ```
 
-**为什么 URL 里只有引用**：URL 是不可信的输入。它能被伪造、被收藏、被转发给别人。如果 URL 里带 `success=true`，任何人都能手工拼出一个“支付成功”页。所以 URL 只当“取件条”：它说明要查哪一笔，不说明结果。真实结果只能来自后端查询。
+**为什么 URL 里只有引用**：URL 是不可信的输入，能被伪造、被收藏、被转发给别人。如果 URL 里带 `success=true`，任何人都能手工拼出一个“支付成功”页。所以 URL 只当“取件条”：它只说明要查哪一笔，不说明结果；真实结果只能来自后端查询。
 
 平台为此提供三条保证：
 
@@ -731,7 +731,7 @@ type RequestPrincipal = {
 
 ### 5.1 分发形态
 
-框架无关的 TypeScript 核心 + 薄框架绑定；支付行为只实现一次。包名为拟定名：
+框架无关的 TypeScript 核心 + 薄框架绑定；支付行为只实现一次。以下包名均为拟定：
 
 | 包 / 构件 | 形态 | 职责 |
 | --- | --- | --- |
