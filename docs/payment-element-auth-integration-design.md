@@ -18,8 +18,7 @@
 | 提供什么包 / SDK，商户如何接入 | §5 |
 | 服务端如何与其他服务协调 | §6 |
 
-约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。服务协调的实现细节备查在[附录 C](#附录-c-服务协调细节备查)。
-
+约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。
 ## 1. 整体时序与状态机
 
 先看两条端到端链路。两图中 3DS 流程**折叠为一步**，只省略图内细节。3DS 由 PaymentElement 自己实现，实现分工与分支见 §2。后面的章节解释图里的其他机制。
@@ -828,9 +827,7 @@ load -> create checkout -> mount -> ready
 
 ## 6. 服务端与其他服务的协调
 
-PaymentElement 服务端只与两个方向交互：**支付服务**和 **provider**。其余组件（webhook 投递、对账、清分）都挂在支付服务之后，PaymentElement 服务端不直接接触它们。实现细节备查见[附录 C](#附录-c-服务协调细节备查)。
-
-三个角色：
+PaymentElement 服务端只与两个方向交互：**支付服务**和 **provider**。其余组件（webhook 投递、对账、清分）都挂在支付服务之后，PaymentElement 服务端不直接接触它们。三个角色：
 
 | 角色 | 是什么 | 拥有什么 |
 | --- | --- | --- |
@@ -910,151 +907,6 @@ sequenceDiagram
 | 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
 | 服务端如何协调 | 凭证服务解析内部 principal，经 mTLS 在服务间传播；状态与事务性 outbox 同事务；统一守卫式迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
 | 时序 | 见 §1（3DS 详细流程见 §2）：纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
-
-## 附录 C. 服务协调细节（备查）
-
-以下是服务协调的实现细节，备查用：服务边界与职责、协调原则、核心记录、会话创建与运行时引导、确认与支付编排约束、通道回调与对账、可靠性与可观测。主干交互见 §6。
-
-### C.1 服务边界（逻辑划分，不要求一服务一部署）
-
-```mermaid
-flowchart LR
-    Merchant[商户后端] --> Edge[API 网关]
-    Browser[商户浏览器] --> Edge
-    Processor[通道 / 收单机构] --> Inbound[通道回调 ingress]
-
-    Edge --> Auth[凭证与能力服务]
-    Edge --> Session[Checkout Session 服务]
-    Edge --> Runtime[Payment Element 运行时]
-    Runtime --> Orch[支付编排器]
-    Session --> Orch
-    Orch --> Adapter[Processor adapter]
-    Adapter --> Processor
-    Inbound --> Adapter
-
-    Auth --> DB[(事务库)]
-    Session --> DB
-    Orch --> DB
-    Adapter --> DB
-    DB --> Outbox[事务性 outbox]
-    Outbox --> Hooks[商户 webhook 投递]
-    Outbox --> Clearing[清分与账务消费者]
-    Outbox --> Recon[对账 worker]
-    Clearing --> Ledger[账务与钱包服务]
-    KMS[KMS 与密钥管理] --> Auth
-    KMS --> Adapter
-    KMS --> Hooks
-```
-
-| 组件 | 拥有 | 不得拥有 |
-|---|---|---|
-| API 网关 | TLS、限流、版本路由、request ID | 从 body 推断商户身份；支付状态迁移 |
-| 凭证与能力服务 | API key/OAuth/浏览器能力验证、principal 解析 | 结账金额；processor 决策 |
-| Checkout Session 服务 | 不可变订单快照、过期/替换、允许 origin、公开状态投影 | 原始支付凭证；商户履约状态 |
-| Payment Element 运行时 | 可用方式引导、frame 配置、浏览器安全确认 API | 商户密钥；权威账务状态 |
-| 支付编排器 | 一个逻辑 attempt、action 续接、超时分类、归一化结果 | PAN/CVC 存储；直接改余额 |
-| Processor adapter | 通道认证、报文翻译、通道幂等、验签 | 跨通道公共策略；字符串式改核心状态 |
-| 通道回调 ingress | 原始体验签、持久收执、去重后应答 | 商户 webhook 投递；同步履约 |
-| 商户 webhook 投递 | 签名信封、重试计划、投递证据与重放 | 从投递结果发明新支付状态 |
-| 对账 worker | 查询未决操作、导入通道报表、发现不一致 | 对另一通道盲目重发不确定授权 |
-| 清分与账务消费者 | ADR 定义的 Transaction 迁移、`CAPTURED` 清分、不可变分录 | 浏览器会话状态；回调字面解释 |
-
-### C.2 协调原则
-
-1. **凭证集中解析，principal 全程传播。** 只有 credential service 接触原始凭证材料。下游只认 `RequestPrincipal`，并在属主服务重复归属校验（§4.4）。
-2. **状态与 outbox 同事务提交。** 每个外部可见状态迁移在同一事务追加版本化 `outbox_event`。队列只搬运工作，不是事实源。消费者完成幂等效果后才确认。
-3. **统一守卫式迁移函数。** 同步响应与验证过的通道回调走同一函数：校验当前状态、操作类型、金额与通道证据后写入 attempt/Transaction 新状态。乱序与重复由 provider-event 去重 + 聚合版本 CAS 兜底，状态不可回退。
-4. **提交前持久化，超时进对账。** 先认领 session 级 submission key、写 attempt 与稳定通道操作键，再调 processor。通道超时后操作进入 unknown，session 锁定禁止盲目重提，对账 worker 用原引用/幂等键查询。**结果未明时禁止换通道重试**（可能双重授权）。
-5. **账务只走一条边界。** 见 §1.3 的账务边界定义（ADR 0003 / ADR 0005 语义）。
-6. **商户侧一个幂等入口。** webhook 与返回页是两条独立信号，先后不定、可能只到一条；商户用同一幂等函数承接，每个业务效果恰好一次。
-7. **test/live 全链路隔离。** 数据库、队列、通道账户、签名密钥、公开域名全部隔离。限流与 origin 检查不替代能力验证。
-
-### C.3 核心记录
-
-| 记录 | 关键字段 | 约束 |
-| --- | --- | --- |
-| `merchant_credential` | 凭证 ID、商户、环境、verifier/key 引用、scopes、状态、创建/轮换/吊销时间 | 密钥值不进日志；test/live 不可交叉 |
-| `oauth_grant` | 授权主体、被连接商户、scopes、issuer、状态、过期 | 商户从 grant 推导，不取 payload |
-| `checkout_session` | session ID、商户、订单引用/版本、金额/币种、capture 模式、返回 URL、允许 origin、过期、替换、公开状态 | 货币快照不可变；替换链唯一活跃 |
-| `browser_capability` | capability ID、session ID、verifier、允许操作、过期、吊销 | 不得授权管理操作或另一会话 |
-| `payment_attempt` | attempt ID、session ID、所选方式、归一状态、通道路由、Transaction ID、action 状态、失败类别、时间戳 | 一个逻辑提交键；终态不可回退 |
-| `provider_operation` | attempt ID、操作种类、通道幂等键、请求指纹、通道引用、结果类别、重试/对账时间 | 按（通道, 商户域, 逻辑操作）唯一 |
-| `provider_event` | 通道事件 ID/类型、通道账户、验证接收时间、payload 引用、处理状态、关联 attempt | 先持久化再应答；重复事件不重复生效 |
-| `outbox_event` | 事件 ID/类型/版本、聚合 ID/版本、payload 引用、创建时间 | 与状态变更同事务插入 |
-| `webhook_delivery` | 端点、事件 ID、签名密钥版本、尝试次数、下次尝试、响应类别、终态 | 重试不产生新事件 |
-| `idempotency_record` | 商户、环境、操作、键、规范化请求哈希、响应引用、保留期限 | 同键不同 payload 拒绝 |
-
-存储规则：强一致事务库是事实源；队列只搬运工作；缓存可放公开配置、限流计数与短租约，但缓存丢失不得允许重复逻辑 attempt 或丢失结果。敏感通道证据用 KMS 密钥加密、限制操作员访问、有明确保留与删除策略。原始 PAN/CVC 只存在于合规的支付域/token vault 路径。
-
-### C.4 会话创建与运行时引导
-
-`POST /v1/checkout-sessions` 的服务端流程：
-
-1. 解析并授权商户 principal，校验账户与 capability 状态。
-2. 规范化请求，认领商户级幂等键。
-3. 校验金额、币种、capture 模式、方式约束、返回 URL、配置的 origin。
-4. **同一事务**写入：不可变 session、浏览器 capability verifier、短时加密的幂等响应信封。
-5. 返回 `client_secret`。保留窗口内的幂等重放返回原响应与原 secret，绝不生成第二个 capability。
-
-运行时引导接受公钥与 `client_secret`，只返回浏览器安全数据：展示金额、可用方式、locale、frame 地址、外观约束、capability 过期、协议版本。可用方式是**确定性评估**：商户配置、环境、金额/币种、capture 模式、安全的买家/浏览器信号、当前通道可用性。测试环境响应可含方式被抑制的原因码；live 不暴露私有风控与路由规则。
-
-### C.5 确认与支付编排
-
-```mermaid
-sequenceDiagram
-    participant Browser
-    participant Edge as API 网关
-    participant Auth as 能力服务
-    participant Pay as 支付编排器
-    participant DB as 事务库
-    participant Adapter as 通道 adapter
-    participant Processor
-    participant Outbox
-
-    Browser->>Edge: confirm(会话能力, 方式引用, 提交键)
-    Edge->>Auth: 校验能力、origin、操作
-    Auth-->>Edge: 浏览器 principal
-    Edge->>Pay: 带已验证 principal 的 confirm
-    Pay->>DB: 认领提交并创建 attempt + PAYING Transaction
-    Pay->>Adapter: 用稳定通道操作键发起授权/请款
-    Adapter->>Processor: 通道请求
-    Processor-->>Adapter: 结果、action 或超时
-    Adapter-->>Pay: 归一化结果 + 通道证据引用
-    Pay->>DB: 守卫式迁移 + 追加 outbox 事件
-    DB-->>Outbox: 已提交事件可发布
-    Pay-->>Browser: authorized / captured / processing / failed / action
-```
-
-编排约束：
-
-- 编排器在联系 processor 之前认领 session/商户级 submission key。同一逻辑提交的并发 confirm 返回既有 attempt 或冲突，不产生平行授权。
-- attempt 与 provider operation 在外部调用**之前**持久化。每个 processor 请求使用从本地操作派生的稳定通道幂等键，绝不取自临时 worker 执行。
-- adapter 返回归一化结果：确定成功、确定失败、需要买家动作、pending、unknown。通道原始码与证据保存在受限字段，不得直接写公共或 Transaction 状态。
-- 守卫式迁移函数校验当前状态、操作种类、金额与通道证据后，原子写入 attempt/Transaction 新状态与 outbox 记录。
-- 3DS 等 action 暂停同一 attempt，只存不透明 action 引用、过期与续接状态。action 完成绝不新建 attempt，除非策略已确定性关闭前一个（细节见 §2）。
-- 提交后 processor 超时 → 操作变 unknown，session 锁定禁止盲目重提；对账器用原引用/幂等键查询 processor。只有确定性失败/过期才允许策略开启新 attempt。**结果未明前禁止 processor failover**（两个 processor 可能都授权）。
-
-### C.6 通道回调、对账与商户事件
-
-**通道回调**：见 §4.3 的认证与 fail-closed 规则。后台处理把通道引用关联到一个本地操作，归一化事件，调用与同步响应**相同的守卫式迁移函数**。重复与乱序安全：provider-event 去重防重复处理，聚合版本检查防状态回退。
-
-**对账**：覆盖 unknown 与长期 pending 的操作、漏 webhook 检测、通道报表导入。记录是哪类证据解决了操作，并通过同一 outbox 路径发更正事件。操作员工具可以触发查询或重放既有证据，**不得**直接编辑终态。
-
-**商户事件与下游账务**：每个外部可见状态迁移在同事务追加版本化 outbox 事件。webhook worker 渲染稳定公共事件，用端点当前密钥版本对时间戳 + 原始体签名，按文档化期限退避重试。**事件创建、端点投递、商户业务效果是三个独立身份、三套去重键**；端点故障不回滚也不改变支付。支付事件同时进入既有的 Transaction 与清分边界，规则见 §1.3。
-
-### C.7 可靠性、安全与可观测
-
-- 正确性靠数据库唯一约束与聚合版本 CAS；分布式锁只是优化。
-- 状态与 outbox 同事务提交。消费者完成自身幂等效果后再确认。
-- 交互调用设总超时。只重试通道契约 + 稳定幂等键保证安全的操作。
-- 队列可按聚合分区，但必须在重复与乱序投递下正确。
-- 过期、未知结果、漏 webhook、投递与对账 worker 跑在持久化调度上，滞后可见、有死信处理。
-- test/live 的数据库、队列、通道账户、签名密钥、公开域名隔离。
-- 服务间 mTLS 或工作负载身份；adapter 与投递 worker 最小权限拿密钥。
-- 常规日志脱敏：授权头、client secret、支付凭证、设备数据、原始回调体。受限证据存储单独审计访问。
-- 关联 `request_id`、凭证 ID、商户、session、attempt、Transaction、provider operation、provider event、outbox event、webhook delivery，不记录秘密值。
-- 按阶段度量确认延迟、processor 超时/unknown 率、未决 attempt 年龄、去重命中、回调验签失败、outbox 滞后、webhook 成功率/年龄、对账不一致、清分失败。
-- 告警看状态年龄与不变量违反，不只看 HTTP 错误率。提供查询、证据重放、端点重放、凭证吊销的操作手册。
 
 ## 延伸阅读（可选）
 
