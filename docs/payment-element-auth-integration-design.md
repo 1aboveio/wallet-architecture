@@ -8,7 +8,7 @@
 - 你已经了解商户侧的接入形状。新手向的商户视角见 [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)。
 - **本文自成一体。** 本文吸收了英文设计文档、3DS 设计与 ADR 0003/0005 的相关内容。读本文不需要翻阅其他文档，文末链接仅是延伸阅读。若与英文契约原文（[Payment Element SDK design](payment-element-design.md)、[Payment Element 3DS design](payment-element-3ds-design.md)）冲突，以英文为准。
 
-本文回答五个设计问题：
+本文回答四个设计问题：
 
 | 问题 | 章节 |
 | --- | --- |
@@ -16,7 +16,6 @@
 | 浏览器端如何认证（商户客户端） | §3 |
 | 服务端如何做服务间认证 | §4 |
 | 提供什么包 / SDK，商户如何接入 | §5 |
-| 服务端如何与其他服务协调 | §6 |
 
 约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。
 ## 1. 整体时序与状态机
@@ -49,7 +48,7 @@ sequenceDiagram
     Note over Platform: 认领 submission key<br/>持久化 attempt + PAYING Transaction + 通道操作键
     Platform->>Processor: 授权请求（稳定通道幂等键）
     Processor-->>Platform: 授权结果
-    Note over Platform: 守卫式迁移：PAYING → PAID<br/>同事务写 outbox 事件
+    Note over Platform: PAYING → PAID<br/>状态与事件同事务提交
 
     alt 授权成功（manual capture）
         Platform-->>Browser: authorized（capture: "manual"）
@@ -825,50 +824,7 @@ load -> create checkout -> mount -> ready
 
 组件必须支持 `unmount()` 与 `destroy()`。destroy 移除 frame、监听、定时器与未完成的 UI 引用；销毁后迟到的异步初始化不得挂载进已离开的路由。刻意没有 `paymentSucceeded` 事件。
 
-## 6. 服务端与其他服务的协调
-
-PaymentElement 服务端只与两个方向交互：**支付服务**和 **provider**。其余组件（webhook 投递、对账、清分）都挂在支付服务之后，PaymentElement 服务端不直接接触它们。三个角色：
-
-| 角色 | 是什么 | 拥有什么 |
-| --- | --- | --- |
-| PaymentElement 服务端 | Session 服务 + Element 运行时 + 确认入口 | 会话、浏览器能力、可用支付方式 |
-| 支付服务 | 平台内部管支付的部分 | 支付 attempt、Transaction 状态、清分触发 |
-| provider | 外部通道（收单机构、3DS 服务），经 adapter 访问 | 真正执行授权与请款 |
-
-交互只有两段：
-
-```mermaid
-sequenceDiagram
-    participant PE as PaymentElement 服务端
-    participant Pay as 支付服务
-    participant Prov as Provider（经 adapter）
-
-    Note over PE,Pay: ① PaymentElement 服务端 ↔ 支付服务
-    PE->>Pay: confirm：提交支付请求（会话绑定的金额、订单、提交键）
-    Pay-->>PE: 支付状态（authorized / captured / processing / failed / action）
-    Note over PE: 支付状态与账务归支付服务。<br/>PaymentElement 只发请求、只读状态。
-
-    Note over Pay,Prov: ② 支付服务 ↔ provider
-    Pay->>Prov: 授权 / 请款（稳定幂等键）
-    Prov-->>Pay: 结果 / 需要 3DS / 超时
-    Prov-->>Pay: 异步回调（验签后落库，与同步结果等价）
-```
-
-**① 交互规则（PaymentElement 服务端 → 支付服务）**
-
-- confirm 只提交一次支付请求。幂等键由会话 + 提交键派生；重复 confirm 返回同一个 attempt。
-- 浏览器展示的一切结果都来自支付服务的状态。PaymentElement 不自己判定成功。
-- 支付状态、清分、账务归支付服务。PaymentElement 不碰余额。
-- 3DS 等 action 由支付服务下发；PaymentElement 只负责呈现和回传结果。
-
-**② 交互规则（支付服务 ↔ provider）**
-
-- 每次授权 / 请款带稳定幂等键。重试不会重复扣款。
-- provider 结果归一为四类：成功、失败、需买家动作、未知。
-- 超时是“未知”：进对账查询，禁止改道另一个 provider 重试（可能双重授权）。
-- provider 异步回调先验签再落库，与同步结果走同一条状态迁移路径。
-
-## 7. 验收要点
+## 6. 验收要点
 
 - 商户身份只能从凭证推导。body 自报 `merchant_id` 无效。
 - 浏览器只用公钥 + 会话能力凭证即可挂载。两者解析到同一商户与环境。
@@ -878,9 +834,6 @@ sequenceDiagram
 - 跳转/页面丢失与异步结果可经状态查询与 webhook 恢复。
 - 会话引用替换不能泄露他人订单（含同商户下他人订单）。
 - 重复/乱序的 webhook 与返回页处理，业务效果各恰好一次。
-- 会话创建、幂等响应与浏览器能力原子提交。确认先持久化 attempt 与通道操作键再调 processor。
-- 提交后超时锁定盲目重试并路由对账。同步响应与验证回调共用守卫式迁移函数。
-- 支付状态变更与 outbox 同事务；webhook 投递失败不改变支付状态。
 - `PAID`、`CAPTURED`、上游注资与下游 `SETTLED` 相互区分；只有账务边界移动余额。
 - 3DS 不新增账务分录、不新增 `AUTHENTICATING` 交易枚举值；认证后恢复同一 attempt。
 - 未登记的返回地址与伪造的 frame 消息被拒绝。
@@ -893,7 +846,7 @@ sequenceDiagram
 | 术语 | 含义 | 出现位置 |
 | --- | --- | --- |
 | 认证 (authentication) | 证明“你是谁”：密钥、token、HMAC 签名、3DS 持卡人认证 | §1.2、§2、§4 |
-| 访问授权 (authorization / 鉴权) | 证明“你能对哪个资源做什么”：scope、资源归属校验、买家会话鉴权 | §3、§4、§6 |
+| 访问授权 (authorization / 鉴权) | 证明“你能对哪个资源做什么”：scope、资源归属校验、买家会话鉴权 | §3、§4 |
 | 支付授权 (funds authorization) | 卡组织意义上的授权请款：`authorized` / `PAID`，与 capture（请款）相对 | §1.1 |
 
 “纯授权”指**不带 3DS 持卡人认证的支付授权**。“认证 + 授权”指 **3DS 持卡人认证完成后继续同一笔支付授权**。金额与账务术语（请款金额、入账金额、结算净额、主币种、MDR 等）遵守 CONTEXT.md 的领域语言。
@@ -905,7 +858,6 @@ sequenceDiagram
 | 浏览器如何认证 | 双凭证：公开商户标识 `pk_` + 会话级能力凭证 `client_secret`。两者必须解析到同一商户与环境 | 浏览器完全不可信。公钥只选配置；能力凭证把爆炸半径限制在单会话、单操作 |
 | 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；多商户应用用 OAuth 受限 token | 密钥永不进浏览器；商户身份只能从凭证推导，body 自报 `merchant_id` 一律无效 |
 | 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
-| 服务端如何协调 | 凭证服务解析内部 principal，经 mTLS 在服务间传播；状态与事务性 outbox 同事务；统一守卫式迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
 | 时序 | 见 §1（3DS 详细流程见 §2）：纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
 
 ## 延伸阅读（可选）
