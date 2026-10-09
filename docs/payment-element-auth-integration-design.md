@@ -22,7 +22,7 @@
 
 ## 1. 整体时序与状态机
 
-先看两条端到端链路。**3DS 在这两张图里是黑盒**，它的内部流程单独呈现在 §2。后面的章节解释图里的其他机制。
+先看两条端到端链路。两图中 3DS 流程**折叠为一步**，只省略图内细节。3DS 由 PaymentElement 自己实现，实现分工与分支见 §2。后面的章节解释图里的其他机制。
 
 ### 1.1 纯授权（无 3DS 持卡人认证）
 
@@ -83,9 +83,9 @@ sequenceDiagram
 
 浏览器应答与签名 webhook 互相独立。两者谁先到都可以。浏览器可能消失。商户后端必须用同一个幂等路径应用业务效果。
 
-### 1.2 认证 + 授权（3DS 为黑盒）
+### 1.2 认证 + 授权（3DS 折叠为一步）
 
-商户代码不变，仍是 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt，完成后**恢复同一 attempt** 继续支付授权。下图把 3DS 折叠为黑盒；免打扰、挑战、跳转等分支见 §2。
+商户代码不变，仍是 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt，完成后**恢复同一 attempt** 继续支付授权。下图把 3DS 流程折叠为一步（实现分工见 §2.1，分支见 §2.2）；
 
 ```mermaid
 sequenceDiagram
@@ -94,13 +94,13 @@ sequenceDiagram
     participant Backend as 商户后端
     participant Platform as 支付平台
     participant Processor as 通道
-    participant DS3 as 3DS 认证（黑盒）
+    participant DS3 as 3DS 验证（折叠为一步）
 
     Browser->>Platform: confirm()（会话能力凭证 + 提交键）
     Platform->>Platform: 持久化 attempt 与关联（Transaction 保持 PAYING）
     Platform->>Processor: 提交卡支付（稳定通道幂等键）
     Processor-->>Platform: 需要 3DS 认证
-    Platform->>DS3: 持卡人认证（内部流程见 §2）
+    Platform->>DS3: 持卡人认证（细节见 §2）
     DS3-->>Platform: 认证结果（通过 / 失败 / 取消）
     Note over Platform: AUTHENTICATING 只是编排态（不进 Transaction 枚举）<br/>认证完成 ≠ 支付成功
 
@@ -159,9 +159,31 @@ Transaction 与钱包两行的权威语义（吸收自 ADR 0003 / ADR 0005）：
 
 ## 2. 3DS 流程（单独呈现）
 
-本章单独展开 §1.2 黑盒内部的持卡人认证流程，以及它的编排约束。3DS 只向发卡行证明持卡人身份。它不认证商户、不证明请款、不授权发货、不决定钱包结算。
+本章展开 §1.2 折叠掉的持卡人认证流程：谁实现、怎么实现、商户对接什么。3DS 只向发卡行证明持卡人身份。它不认证商户、不证明请款、不授权发货、不决定钱包结算。
 
-### 2.1 详细时序
+### 2.1 谁实现 3DS？商户对接什么？
+
+**Q：3DS 验证流程要在 PaymentElement 里实现吗？**
+
+**要。** 3DS 是 PaymentElement 的内部能力，由平台实现，不需要商户实现。实现分两层：
+
+| 层 | 职责 |
+| --- | --- |
+| PaymentElement SDK（浏览器） | 呈现发卡行挑战（内嵌 / 弹窗）、执行 confirm 响应里的跳转指令、回传 action 结果、发 `actionstart` / `actionend` |
+| 平台后端（支付编排器 + processor adapter） | 判定是否需要 3DS、与 3DS 体系交换认证与挑战报文、保存 action 引用与续接状态、认证后恢复同一 attempt |
+
+EMV 3DS 报文、发卡行/目录服务器数据、认证值（CAVV/AAV）、设备数据只存在于 adapter 与通道之间，**不进**商户 API、商户回调和日志。
+
+**Q：商户如何对接？**
+
+没有 3DS 专属对接。商户只做四件事：
+
+1. 按常规四步接入：服务端建会话、浏览器挂载、`confirm()`（§5，步骤详解见商户指南 §3–§6）。
+2. 可选：监听 `actionstart` / `actionend`（§2.4）做 UX 协调：锁导航、显示加载。
+3. 必做：跳转回流页（§3.3）与 webhook（§4.2）收口。跳转场景会销毁 JS 上下文。
+4. 不要做：不处理挑战数据、不自己拼跳转 URL、不把 3DS 验证通过当支付成功。
+
+### 2.2 详细时序
 
 ```mermaid
 sequenceDiagram
@@ -224,7 +246,7 @@ sequenceDiagram
     Note over Platform,Backend: 跳转指令随 confirm() 响应下发后，支付结果不再从 Promise 回来<br/>关页/挂起同理；收口只能靠签名 webhook + 认证过的状态查询
 ```
 
-### 2.2 四种呈现模式
+### 2.3 四种呈现模式
 
 | 模式 | 行为 | 平台义务 |
 | --- | --- | --- |
@@ -235,7 +257,7 @@ sequenceDiagram
 
 confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured` / `processing` / `failed`）和**动作指令**。内嵌挑战是指令的一种，由 SDK 自行呈现；跳转指令（`{ type: "redirect", url }`）携带发卡行验证 URL，由 SDK 在浏览器端执行跳转到发卡行。商户代码不接触发卡行 URL，也不接触挑战负载。
 
-### 2.3 action 事件契约
+### 2.4 action 事件契约
 
 ```ts
 checkout.on("actionstart", ({ type }) => {
@@ -251,7 +273,7 @@ checkout.on("actionend", ({ type, outcome }) => {
 
 `actionstart` 表示外部交互开始。`actionend: completed` 只表示交互结束，不表示授权或请款成功。跳转、关页、进程挂起时 `actionend` 可能永不触发；正确性不得依赖它。SDK 不发出发卡行挑战内容、认证值、设备数据或原始处理器结果。
 
-### 2.4 attempt 连续性与幂等
+### 2.5 attempt 连续性与幂等
 
 - 认证恢复**同一个逻辑 attempt**。平台在呈现 action 前持久化 attempt ID 与处理器关联。跳转返回、webhook、状态查询都必须解析到该 attempt，不得新建。
 - action 有效期间：重复 `confirm()` 返回当前 attempt 或确定性的“进行中”响应；第二个浏览器标签不能创建平行 attempt。
@@ -259,7 +281,7 @@ checkout.on("actionend", ({ type, outcome }) => {
 - 结果不确定时先查询/对账，再决定重试或改路由。
 - 明确拒绝/取消后的买家重试获得**新的 attempt ID**，同一订单/会话下合法。
 
-### 2.5 失败与恢复对照
+### 2.6 失败与恢复对照
 
 | 情况 | 必须的行为 |
 | --- | --- |
@@ -275,7 +297,7 @@ checkout.on("actionend", ({ type, outcome }) => {
 | 挑战期间会话过期 | 阻止新 attempt，但继续跟踪已提交的 attempt，接受合法迟到结果 |
 | 挑战期间购物车/库存变化 | 不改在途金额。迟到合法付款按商户迟到政策处理（如拦截自动发货），绝不因旧订单版本无法履约而发起第二笔扣款 |
 
-### 2.6 3DS 安全与隐私
+### 2.7 3DS 安全与隐私
 
 - 只从配置的处理器/发卡行路径呈现挑战；永不注入商户提供的挑战 HTML。
 - 所有跨 frame 消息按精确 origin、source window、instance/action ID 与 schema 校验。
@@ -515,7 +537,7 @@ type PaymentError = {
 };
 ```
 
-约束：错误码稳定且文档化恢复动作；面向买家的文案本地化，不暴露 processor 诊断。提交后的网络超时返回 unknown/processing，**不得**触发对另一 processor 的盲目重试。跳转类动作由 SDK 根据 confirm 响应自动执行（见 §2.2）；跳转会销毁 JS 上下文，`ConfirmResult` 在跳转场景不会回到调用方。React 绑定的 identity 类 props 不可变，替换走显式路径。商户侧完整接入代码（服务端建会话、挂载、返回页、webhook 验签）见 [商户接入指南](payment-element-merchant-integration-guide.md) §3–§6。
+约束：错误码稳定且文档化恢复动作；面向买家的文案本地化，不暴露 processor 诊断。提交后的网络超时返回 unknown/processing，**不得**触发对另一 processor 的盲目重试。跳转类动作由 SDK 根据 confirm 响应自动执行（见 §2.3）；跳转会销毁 JS 上下文，`ConfirmResult` 在跳转场景不会回到调用方。React 绑定的 identity 类 props 不可变，替换走显式路径。商户侧完整接入代码（服务端建会话、挂载、返回页、webhook 验签）见 [商户接入指南](payment-element-merchant-integration-guide.md) §3–§6。
 
 ### 5.3 Checkout Session 契约
 
@@ -572,7 +594,7 @@ load -> create checkout -> mount -> ready
 | `change` | 非敏感的完整性、校验、所选方式状态变化 |
 | `focus` / `blur` | 焦点进入/离开受支持字段 |
 | `loaderror` | 初始化或加载失败（`code` + `requestId`） |
-| `actionstart` / `actionend` | action-capable 方法的外部交互生命周期（语义见 §2.3） |
+| `actionstart` / `actionend` | action-capable 方法的外部交互生命周期（语义见 §2.4） |
 
 组件必须支持 `unmount()` 与 `destroy()`。destroy 移除 frame、监听、定时器与未完成的 UI 引用；销毁后迟到的异步初始化不得挂载进已离开的路由。刻意没有 `paymentSucceeded` 事件。
 

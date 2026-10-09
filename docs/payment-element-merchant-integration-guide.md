@@ -79,7 +79,7 @@ sequenceDiagram
 
 ### 1.3 银行验证 + 付款（3DS）
 
-多一步“银行确认是本人”。你的代码**不变**，仍是同一个 `confirm()`。3DS 在总览里是**黑盒**。它的内部流程单独呈现，见 §7.1。
+多一步“银行确认是本人”。你的代码**不变**，仍是同一个 `confirm()`。总览图里 3DS **折叠为一步**；它由 PaymentElement 内部实现（你不需要写任何 3DS 代码），流程细节见 §7.1。
 
 ```mermaid
 sequenceDiagram
@@ -88,13 +88,13 @@ sequenceDiagram
     participant Server as 你的服务器
     participant Pay as 支付平台
     participant Bank as 通道和银行
-    participant DS3 as 3DS 认证（黑盒）
+    participant DS3 as 3DS 验证（PaymentElement 内部）
 
     Buyer->>Page: 填卡，点 Pay
     Page->>Pay: confirm()
     Pay->>Bank: 请求授权
     Bank-->>Pay: 需要 3DS 认证
-    Pay->>DS3: 持卡人认证（内部流程见 §7.1）
+    Pay->>DS3: 持卡人认证（细节见 §7.1）
     DS3-->>Pay: 认证结果（通过 / 失败 / 取消）
     Pay->>Bank: 恢复同一笔授权
     Bank-->>Pay: 授权 / 请款结果
@@ -573,9 +573,17 @@ webhook 端点配置在**商户/环境**级（平台后台登记）。不支持�
 
 ## 7. 3DS 流程详解与结果异常
 
-两种流程的时序见 §1.2 与 §1.3。那里的 3DS 是黑盒。这一章单独展开 3DS 流程，并讲结果怎么读、异常怎么办。
+两种流程的时序见 §1.2 与 §1.3。那里的 3DS 折叠为一步。这一章展开 3DS：谁实现它、流程长什么样、结果怎么读、异常怎么办。
 
 ### 7.1 3DS 流程（单独呈现）
+
+**3DS 要我实现吗？** 不要。3DS 的验证流程由 PaymentElement 内部实现：平台 SDK 负责呈现验证框和执行跳转，平台后端负责与银行 / 3DS 体系对接。你没有 3DS 专属代码。
+
+你只有三件相关的事：
+
+1. 可选：监听 `actionstart` / `actionend`（§4.4）做界面协调，如锁导航、显示加载。
+2. 必做：跳转回流页（§5）与 webhook（§6）收口。跳转会销毁页面上下文。
+3. 不要做：不处理验证数据、不自己拼跳转 URL、不把“验证通过”当“支付成功”。
 
 银行验证的内部流程如下。你的代码只有一个 `confirm()`。
 
