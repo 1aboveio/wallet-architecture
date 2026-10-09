@@ -303,7 +303,7 @@ Content-Type: application/json
 
 ### 4.2 代码（vanilla JS / TypeScript）
 
-JS 与 React 共用同一核心 SDK，行为完全一致，任选一种。纯 JavaScript 项目去掉类型标注即可。
+JS 与 React 共用同一核心 SDK，行为完全一致，任选一种。纯 JavaScript 项目去掉类型标注即可。`createCheckout` 与 `confirm()` 都由 SDK 直接提交到平台的托管运行时端点（不是你的服务器）；`returnUrl` 是买家跳转回来的地址，不是提交目标。
 
 ```ts
 // checkout-page.ts

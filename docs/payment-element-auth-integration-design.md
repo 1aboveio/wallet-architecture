@@ -806,6 +806,15 @@ Idempotency-Key: checkout_order_100123_v1
 - 最小服务端端点：`GET /v1/checkout-sessions/{id}`（状态与关联）、`POST /v1/checkout-sessions/{id}/expire`（停新 attempt）、`GET /v1/payments/{id}`（权威授权/请款状态）。
 - 手工请款、取消、退款是相邻的管理 API：同样走商户服务端认证、归属校验、持久化幂等键；退款累计不超过原请款金额。
 
+**createCheckout / confirm 的提交目标（几个 URL 不要混）**
+
+1. **`createCheckout` / mount 的引导请求**：`POST https://payments.walletpay.example/v1/checkout-sessions/bootstrap`（示意）。请求带公钥 + `client_secret`，返回浏览器安全配置：展示金额、可用方式、locale、frame 地址、外观约束、capability 过期、协议版本。
+2. **`confirm()` 的提交目标**：`POST https://payments.walletpay.example/v1/confirm`（示意）——托管运行时域上的浏览器安全确认 API。提交用会话能力凭证（`client_secret`）鉴权。
+
+   以上两个端点都在托管运行时域（与受控字段 iframe 同一支付域），SDK 从浏览器直接调用；不经商户后端，也不用 `sk_`。与管理面 API（商户后端的 `POST /v1/checkout-sessions` 等，Bearer `sk_` / OAuth）刻意分开：不同鉴权面、不同限流，CORS 只允许登记的商户 origin。
+3. **`returnUrl` 参数**：不是提交目标。它是跳转类 action 完成后买家回跳的商户地址，创建会话与 confirm 时都要过登记校验（§3.3）。
+4. **跳转目标**：confirm 响应里动作指令携带的发卡行验证 URL（§2.3），由 SDK 导航过去。
+
 ### 5.4 生命周期与事件
 
 ```text
@@ -879,9 +888,9 @@ load -> create checkout -> mount -> ready
 | API | 说明 | 关键约束（位置） |
 | --- | --- | --- |
 | `loadWalletPay({ publicKey })` | 加载托管运行时 | 公钥只选配置，不授权支付（§3.1） |
-| `createCheckout({ clientSecret })` | 会话级编排对象 | 校验公钥/凭证同商户同环境（§3.1） |
+| `createCheckout({ clientSecret })` | 会话级编排对象；触发引导请求 `POST …/v1/checkout-sessions/bootstrap` | 校验公钥/凭证同商户同环境（§3.1、§5.3） |
 | `createPaymentElement(options)` + `mount(el)` | 挂载多支付方式 UI | 容器内创建字段 iframe（§3.4） |
-| `checkout.confirm({ returnUrl })` | 确认并编排 action | 提交键防重；跳转指令自动执行；结果见 `ConfirmResult`（§2.3、§5.2） |
+| `checkout.confirm({ returnUrl })` | 确认并编排 action；提交到 `POST https://payments.walletpay.example/v1/confirm`（能力凭证鉴权） | 提交键防重；跳转指令自动执行；结果见 `ConfirmResult`（§2.3、§5.2、§5.3） |
 | `checkout.on("actionstart" / "actionend")` | action 生命周期 | 语义见 §2.4 |
 | `element.on("ready" / "change" / "focus" / "blur" / "loaderror")` | UI 状态信号 | 刻意没有 `paymentSucceeded`（§5.4） |
 | `unmount()` / `destroy()` | 清理 frame、监听、在途请求 | 陈旧消息一律拒绝（§3.4 ⑧） |
