@@ -153,7 +153,7 @@ type RequestPrincipal = {
 
 ### 商户接入四步
 
-**① 服务端（唯一持有密钥的一侧）**：创建 Checkout Session，金额用货币最小单位（`1099` = USD 10.99），购物车变更 → 新 `order_version` + 替换 session（绝不原地改金额）：
+**① 服务端（唯一持有密钥的一侧）**：创建 Checkout Session，金额用货币最小单位（`1099` = USD 10.99），购物车变更 → 新 `order_version` + 替换 session（绝不原地改金额）。先看等价的 REST 契约（SDK 只是它的封装，不用 SDK 也能接）：
 
 ```http
 POST /v1/checkout-sessions
@@ -173,33 +173,215 @@ Idempotency-Key: checkout_order_100123_v1
 }
 ```
 
-把返回的 `client_secret` 连同公钥下发给该买家的浏览器上下文。
+同一操作的服务端 SDK 写法（`@walletpay/node`，私密钥只存在于服务端进程）：
+
+```ts
+// server/checkout.ts
+import { WalletPay } from "@walletpay/node";
+
+// sk_test_... / sk_live_...；绝不出现在前端代码或响应里
+const walletpay = new WalletPay(process.env.WALLETPAY_SECRET_KEY!);
+
+app.post("/api/checkout", async (req, res) => {
+  const order = await loadOrder(req); // 商户自己的权威订单与总价
+
+  const session = await walletpay.checkoutSessions.create(
+    {
+      merchant_order_reference: order.reference,
+      order_version: order.version,
+      amount: { value: order.totalMinor, currency: order.currency },
+      capture_mode: "automatic",
+      return_url: "https://shop.example/payments/return",
+      locale: "zh-CN",
+      expires_in_seconds: 1800,
+    },
+    // 幂等键必须持久稳定：同一逻辑请求重试不得创建第二个 session
+    { idempotencyKey: `checkout_${order.reference}_v${order.version}` },
+  );
+
+  // 只把 client_secret 发给该买家的浏览器上下文
+  res.json({
+    clientSecret: session.client_secret,
+    publicKey: "pk_test_merchant",
+  });
+});
+```
 
 **② 浏览器**：加载 → 建 checkout → 挂载 → 确认：
 
 ```ts
-const walletPay = await loadWalletPay({ publicKey: "pk_test_merchant" });
+// checkout-page.ts
+import { loadWalletPay } from "@walletpay/checkout-js";
+
+// publicKey 与 clientSecret 来自 ① 的商户后端接口
+const walletPay = await loadWalletPay({ publicKey });
 const checkout = await walletPay.createCheckout({ clientSecret });
 
 const paymentElement = checkout.createPaymentElement({ layout: "accordion" });
 paymentElement.mount("#payment-element");
 
-paymentElement.on("change", ({ complete }) => setPayEnabled(complete));
+paymentElement.on("ready", () => setFormEnabled(true));
+paymentElement.on("change", ({ complete, paymentMethod }) => {
+  setPayEnabled(complete); // 只用它驱动按钮态
+  recordSelectedMethod(paymentMethod);
+});
+paymentElement.on("loaderror", ({ code, requestId }) => {
+  showIntegrationError(code, requestId);
+});
+
+// 3DS / 跳转类 action 的 UX 协调（语义见 3DS 设计）
+checkout.on("actionstart", ({ type }) => disableCheckoutNavigation(type));
+checkout.on("actionend", ({ type, outcome }) => {
+  restoreCheckoutNavigation(type, outcome);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+
+  // 注意：整页跳转会销毁 JS 上下文，这个 Promise 可能永不 resolve
   const result = await checkout.confirm({
     returnUrl: "https://shop.example/payments/return",
   });
-  // 按 result.status 渲染 UX，不做资金判定
+
+  switch (result.status) {
+    case "authorized":
+      showAuthorizedState(result.capture); // manual / pending / failed
+      break;
+    case "captured":
+      showPaymentReceived();
+      break;
+    case "processing":
+      showProcessingState(); // 延迟方法或未知结果
+      break;
+    case "failed":
+      showPaymentError(result.error);
+      break;
+  }
+});
+
+// 路由离开或组件卸载时清理 frame 与监听
+// paymentElement.destroy();
+```
+
+React 版把同样的对象放进 provider。绑定层只在浏览器初始化，容忍 Strict Mode 重放，卸载时销毁监听与 frame。身份类 provider props 不可变；更换商户/环境/client secret 走显式替换路径。
+
+```tsx
+// CheckoutPage.tsx
+import {
+  WalletPayProvider,
+  CheckoutProvider,
+  PaymentElement,
+  useCheckout,
+} from "@walletpay/react";
+
+function PayButton() {
+  const { confirm } = useCheckout();
+  return (
+    <button
+      type="submit"
+      onClick={() => confirm({ returnUrl: "https://shop.example/payments/return" })}
+    >
+      Pay
+    </button>
+  );
+}
+
+export function CheckoutPage({ publicKey, clientSecret }: Props) {
+  return (
+    <WalletPayProvider publicKey={publicKey}>
+      <CheckoutProvider clientSecret={clientSecret}>
+        <PaymentElement
+          options={{ layout: "accordion" }}
+          onReady={() => setFormEnabled(true)}
+          onChange={({ complete }) => setPayEnabled(complete)}
+          onLoadError={({ code, requestId }) => showIntegrationError(code, requestId)}
+        />
+        <PayButton />
+      </CheckoutProvider>
+    </WalletPayProvider>
+  );
+}
+```
+
+**③ 返回页**：只收不透明 session 引用 → 转后端查权威状态（见 §2）。浏览器侧只取引用，不解析任何“成功”参数：
+
+```ts
+// /payments/return（浏览器）
+const ref = new URLSearchParams(location.search).get("checkout_session");
+const res = await fetch(`/api/checkout/result?session=${encodeURIComponent(ref)}`, {
+  credentials: "include", // 带买家会话，供后端做访问授权
+});
+renderResult(await res.json());
+```
+
+```ts
+// server/result.ts
+app.get("/api/checkout/result", async (req, res) => {
+  const buyer = await authenticateBuyer(req); // 商户自己的买家 / 游客鉴权
+  const session = await walletpay.checkoutSessions.retrieve(req.query.session);
+
+  // 订单从 session 的固定绑定推导。浏览器提交的订单号不是权威。
+  const order = await loadOrder(session.merchant_order_reference, session.order_version);
+  if (!order || order.buyerId !== buyer.id) {
+    return res.status(404).end(); // 不泄露任何跨订单数据
+  }
+
+  const payment = session.payment_id
+    ? await walletpay.payments.retrieve(session.payment_id)
+    : null;
+  res.json({
+    status: payment?.status ?? session.payment_status,
+    capture: payment?.capture,
+  });
 });
 ```
 
-React 版把同样的对象放进 `WalletPayProvider publicKey` + `CheckoutProvider clientSecret` + `<PaymentElement />`。身份类 provider props 不可变；更换商户/环境/client secret 走显式替换路径。
+**④ Webhook 端点**：验签 + 先落库 + `event_id` 去重 + 幂等业务效果（见 §3.2）。硬性顺序：验签 → 落库 → 应答 → 幂等应用：
 
-**③ 返回页**：只收不透明 session 引用 → 转后端查权威状态（见 §2）。
+```ts
+// server/webhook.ts —— 必须用原始 body 验签，不能先 JSON 解析
+import crypto from "node:crypto";
 
-**④ Webhook 端点**：验签 + 先落库 + `event_id` 去重 + 幂等业务效果（见 §3.2）。
+app.post(
+  "/api/walletpay-webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const eventId = req.get("WalletPay-Event-Id");
+    const timestamp = req.get("WalletPay-Timestamp");
+    const signature = req.get("WalletPay-Signature") ?? "";
+    const rawBody = req.body;
+
+    // 1) 新鲜度：拒绝过期时间戳，防重放
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
+      return res.status(400).end();
+    }
+
+    // 2) 验签：HMAC-SHA256(端点签名密钥, `${timestamp}.${rawBody}`)
+    const expected =
+      "v1=" +
+      crypto
+        .createHmac("sha256", process.env.WALLETPAY_WEBHOOK_SECRET!)
+        .update(`${timestamp}.`)
+        .update(rawBody)
+        .digest("hex");
+    const valid = crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected),
+    );
+    if (!valid) return res.status(400).end();
+
+    // 3) 先落库，再应答；按 event_id 去重
+    const event = JSON.parse(rawBody.toString());
+    const isNew = await db.insertEventIfNew(eventId, event);
+    res.status(200).end();
+
+    // 4) 业务效果幂等应用。与返回页共用同一个函数。
+    if (isNew) await applyOrderEffectsOnce(event);
+  },
+);
+```
+
+签名串构造（`时间戳 + "." + 原始 body`）为拟定示例，最终以契约为准。投递语义是至少一次且不保序，所以 3)、4) 的去重与幂等是硬性要求，不是优化项。
 
 ### 商户侧职责边界
 
