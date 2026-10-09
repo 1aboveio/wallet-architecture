@@ -18,7 +18,7 @@
 | 提供什么包 / SDK，商户如何接入 | §5 |
 | 服务端如何与其他服务协调 | §6 |
 
-约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。
+约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。服务协调的实现细节备查在[附录 C](#附录-c-服务协调细节备查)。
 
 ## 1. 整体时序与状态机
 
@@ -335,21 +335,87 @@ const checkout = await walletPay.createCheckout({
 - 限流与 origin 检查减少滥用，但不替代能力验证。
 - 浏览器事件（`ready` / `change` / `actionend` 等）只是 UI 状态。不存在 `paymentSucceeded` 事件。支付事实只能来自服务端认证过的查询与签名 webhook。
 
-### 3.3 返回页鉴权的平台语义
+### 3.3 返回页：平台提供的三条保证
 
-跳转返回的 URL 只携带不透明会话引用（`checkout_session=cs_01J...`），不携带 `success=true` 与 `client_secret`。平台侧的资源投影必须满足：
+3DS 跳转或钱包跳转后，买家被带回商户的 `return_url`。此时浏览器地址栏里只有一个不透明引用：
 
-- `GET /v1/checkout-sessions/{id}` 用服务端凭证鉴权，验证商户资源归属；
-- 商户后端按 session 的**固定绑定**推导订单，浏览器提交的订单号不是权威；
-- 未授权查询不返回任何跨订单状态或买家数据，即使引用属于同一商户。
+```text
+https://shop.example/payments/return?checkout_session=cs_01J...
+```
+
+**为什么 URL 里只有引用**：URL 是不可信的输入。它能被伪造、被收藏、被转发给别人。如果 URL 里带 `success=true`，任何人都能手工拼出一个“支付成功”页。所以 URL 只当“取件条”：它说明要查哪一笔，不说明结果。真实结果只能来自后端查询。
+
+平台为此提供三条保证：
+
+1. **结果只能由商户后端查。** `GET /v1/checkout-sessions/{id}` 必须带 `Authorization: Bearer sk_...`。浏览器没有私密钥，直接调会被拒绝。
+2. **订单以会话的绑定为准。** 创建会话时，订单号和订单版本已经冻结进会话。后端查回会话后，用**会话里的订单号**找订单，绝不使用页面传来的订单号。
+
+   这挡住一类攻击：攻击者把自己的 `checkout_session` 引用塞进别人的结账页。后端按会话查出的是攻击者的订单，与买家正在看的订单对不上，访问授权失败。
+3. **越权查询只返回“查无此单”。** 买家 A 拿买家 B 的引用查询（即使同一商户），订单归属校验失败，接口返回 404。响应不区分“不存在”和“无权查看”，不泄露任何信息。
+
+三条保证合起来的效果：**返回页展示的状态，一定是当前买家自己那笔订单的真实状态。**
 
 ### 3.4 安全 frame 边界
 
-敏感字段运行在专用支付域的跨域 frame 里。frame 协议包含协议版本、实例 ID、消息类型、请求/关联 ID；使用精确 `targetOrigin`，校验 `event.origin`、`event.source`、实例状态与 payload schema；销毁或重挂后的陈旧消息一律拒绝。
+敏感字段（卡号、有效期、CVC）运行在平台支付域的跨域 iframe 里。商户页面只能通过 `postMessage` 协议与它们通信。安全要求配合四段代码用例说明。
 
-只允许非敏感状态过界：完整性、支持的校验码、所选方式、焦点状态、不透明支付引用。协议不得暴露击键、PAN、CVC 或认证密钥。frame 尺寸调整有界，防止循环与滥用尺寸。
+**① 消息格式：只传非敏感状态**
 
-对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
+```ts
+// frame 允许发给商户页的消息类型。击键、PAN、CVC、认证密钥永远不在其中
+type FrameMessage =
+  | { type: "ready" }
+  | { type: "change"; complete: boolean; validation: string[]; paymentMethod: string }
+  | { type: "focus" }
+  | { type: "blur" }
+  | { type: "resize"; height: number }
+  | { type: "loaderror"; code: string; requestId: string };
+```
+
+**② frame 内部：严格校验每一条收到的消息**
+
+```ts
+// 受控支付域内的安全字段（frame 内）
+window.addEventListener("message", (event) => {
+  // 精确 origin 比较，不是前缀匹配
+  if (event.origin !== EXPECTED_PARENT_ORIGIN) return;
+  // 只接受父窗口发来的消息
+  if (event.source !== window.parent) return;
+  // schema 校验：结构不对直接丢弃
+  const msg = parseFrameMessage(event.data);
+  if (!msg) return;
+  // 协议版本与实例必须匹配；销毁后到达的陈旧消息拒绝
+  if (msg.protocolVersion !== PROTOCOL_VERSION) return;
+  if (msg.instanceId !== myInstanceId) return;
+  if (destroyed) return;
+
+  handleMessage(msg);
+});
+```
+
+**③ SDK 父页：发消息必须指定精确 targetOrigin**
+
+```ts
+frame.contentWindow!.postMessage(
+  { protocolVersion: 1, instanceId, type: "submit" },
+  "https://payments.walletpay.example", // 精确 targetOrigin，不能用 "*"
+);
+```
+
+**④ resize 有界，防止循环和滥用**
+
+```ts
+const MIN_HEIGHT = 40;
+const MAX_HEIGHT = 800;
+
+function applyResize(msg: { type: "resize"; height: number }) {
+  // 高度夹在合法区间；单向设置，不因 frame 的回声再触发调整
+  const h = Math.min(Math.max(msg.height, MIN_HEIGHT), MAX_HEIGHT);
+  frame.style.height = `${h}px`;
+}
+```
+
+配套要求：frame 协议带协议版本、实例 ID、消息类型、请求/关联 ID；销毁或重挂后陈旧消息一律拒绝。对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
 
 ## 4. 服务端认证模型（服务间认证）
 
@@ -509,7 +575,94 @@ load -> create checkout -> mount -> ready
 
 ## 6. 服务端与其他服务的协调
 
-### 6.1 服务边界（逻辑划分，不要求一服务一部署）
+PaymentElement 服务端只与两个方向交互：**支付服务**和 **provider**。其余组件（webhook 投递、对账、清分）都挂在支付服务之后，PaymentElement 服务端不直接接触它们。实现细节备查见[附录 C](#附录-c-服务协调细节备查)。
+
+三个角色：
+
+| 角色 | 是什么 | 拥有什么 |
+| --- | --- | --- |
+| PaymentElement 服务端 | Session 服务 + Element 运行时 + 确认入口 | 会话、浏览器能力、可用支付方式 |
+| 支付服务 | 平台内部管支付的部分 | 支付 attempt、Transaction 状态、清分触发 |
+| provider | 外部通道（收单机构、3DS 服务），经 adapter 访问 | 真正执行授权与请款 |
+
+交互只有两段：
+
+```mermaid
+sequenceDiagram
+    participant PE as PaymentElement 服务端
+    participant Pay as 支付服务
+    participant Prov as Provider（经 adapter）
+
+    Note over PE,Pay: ① PaymentElement 服务端 ↔ 支付服务
+    PE->>Pay: confirm：提交支付请求（会话绑定的金额、订单、提交键）
+    Pay-->>PE: 支付状态（authorized / captured / processing / failed / action）
+    Note over PE: 支付状态与账务归支付服务。<br/>PaymentElement 只发请求、只读状态。
+
+    Note over Pay,Prov: ② 支付服务 ↔ provider
+    Pay->>Prov: 授权 / 请款（稳定幂等键）
+    Prov-->>Pay: 结果 / 需要 3DS / 超时
+    Prov-->>Pay: 异步回调（验签后落库，与同步结果等价）
+```
+
+**① 交互规则（PaymentElement 服务端 → 支付服务）**
+
+- confirm 只提交一次支付请求。幂等键由会话 + 提交键派生；重复 confirm 返回同一个 attempt。
+- 浏览器展示的一切结果都来自支付服务的状态。PaymentElement 不自己判定成功。
+- 支付状态、清分、账务归支付服务。PaymentElement 不碰余额。
+- 3DS 等 action 由支付服务下发；PaymentElement 只负责呈现和回传结果。
+
+**② 交互规则（支付服务 ↔ provider）**
+
+- 每次授权 / 请款带稳定幂等键。重试不会重复扣款。
+- provider 结果归一为四类：成功、失败、需买家动作、未知。
+- 超时是“未知”：进对账查询，禁止改道另一个 provider 重试（可能双重授权）。
+- provider 异步回调先验签再落库，与同步结果走同一条状态迁移路径。
+
+## 7. 验收要点
+
+- 商户身份只能从凭证推导。body 自报 `merchant_id` 无效。
+- 浏览器只用公钥 + 会话能力凭证即可挂载。两者解析到同一商户与环境。
+- 浏览器无法改动金额、币种、商户、capture 策略。
+- 原始支付数据不出现在商户可见状态、事件与日志。
+- 重复确认不产生平行逻辑 attempt。购物车变更产生替换 session 而非改金额。
+- 跳转/页面丢失与异步结果可经状态查询与 webhook 恢复。
+- 会话引用替换不能泄露他人订单（含同商户下他人订单）。
+- 重复/乱序的 webhook 与返回页处理，业务效果各恰好一次。
+- 会话创建、幂等响应与浏览器能力原子提交。确认先持久化 attempt 与通道操作键再调 processor。
+- 提交后超时锁定盲目重试并路由对账。同步响应与验证回调共用守卫式迁移函数。
+- 支付状态变更与 outbox 同事务；webhook 投递失败不改变支付状态。
+- `PAID`、`CAPTURED`、上游注资与下游 `SETTLED` 相互区分；只有账务边界移动余额。
+- 3DS 不新增账务分录、不新增 `AUTHENTICATING` 交易枚举值；认证后恢复同一 attempt。
+- 未登记的返回地址与伪造的 frame 消息被拒绝。
+- 浏览器完成态不能直接记账、不能把资金移到 `available`、不能在无服务端证据时触发发货。
+
+## 附录 A. 术语约定
+
+中文里“认证”和“授权”容易混用。本文严格区分三组词：
+
+| 术语 | 含义 | 出现位置 |
+| --- | --- | --- |
+| 认证 (authentication) | 证明“你是谁”：密钥、token、HMAC 签名、3DS 持卡人认证 | §1.2、§2、§4 |
+| 访问授权 (authorization / 鉴权) | 证明“你能对哪个资源做什么”：scope、资源归属校验、买家会话鉴权 | §3、§4、§6 |
+| 支付授权 (funds authorization) | 卡组织意义上的授权请款：`authorized` / `PAID`，与 capture（请款）相对 | §1.1 |
+
+“纯授权”指**不带 3DS 持卡人认证的支付授权**。“认证 + 授权”指 **3DS 持卡人认证完成后继续同一笔支付授权**。金额与账务术语（请款金额、入账金额、结算净额、主币种、MDR 等）遵守 CONTEXT.md 的领域语言。
+
+## 附录 B. 决策总览
+
+| 问题 | 决策 | 关键理由 |
+| --- | --- | --- |
+| 浏览器如何认证 | 双凭证：公开商户标识 `pk_` + 会话级能力凭证 `client_secret`。两者必须解析到同一商户与环境 | 浏览器完全不可信。公钥只选配置；能力凭证把爆炸半径限制在单会话、单操作 |
+| 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；多商户应用用 OAuth 受限 token | 密钥永不进浏览器；商户身份只能从凭证推导，body 自报 `merchant_id` 一律无效 |
+| 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
+| 服务端如何协调 | 凭证服务解析内部 principal，经 mTLS 在服务间传播；状态与事务性 outbox 同事务；统一守卫式迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
+| 时序 | 见 §1（3DS 详细流程见 §2）：纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
+
+## 附录 C. 服务协调细节（备查）
+
+以下是服务协调的实现细节，备查用：服务边界与职责、协调原则、核心记录、会话创建与运行时引导、确认与支付编排约束、通道回调与对账、可靠性与可观测。主干交互见 §6。
+
+### C.1 服务边界（逻辑划分，不要求一服务一部署）
 
 ```mermaid
 flowchart LR
@@ -553,7 +706,7 @@ flowchart LR
 | 对账 worker | 查询未决操作、导入通道报表、发现不一致 | 对另一通道盲目重发不确定授权 |
 | 清分与账务消费者 | ADR 定义的 Transaction 迁移、`CAPTURED` 清分、不可变分录 | 浏览器会话状态；回调字面解释 |
 
-### 6.2 协调原则
+### C.2 协调原则
 
 1. **凭证集中解析，principal 全程传播。** 只有 credential service 接触原始凭证材料。下游只认 `RequestPrincipal`，并在属主服务重复归属校验（§4.4）。
 2. **状态与 outbox 同事务提交。** 每个外部可见状态迁移在同一事务追加版本化 `outbox_event`。队列只搬运工作，不是事实源。消费者完成幂等效果后才确认。
@@ -563,7 +716,7 @@ flowchart LR
 6. **商户侧一个幂等入口。** webhook 与返回页是两条独立信号，先后不定、可能只到一条；商户用同一幂等函数承接，每个业务效果恰好一次。
 7. **test/live 全链路隔离。** 数据库、队列、通道账户、签名密钥、公开域名全部隔离。限流与 origin 检查不替代能力验证。
 
-### 6.3 核心记录
+### C.3 核心记录
 
 | 记录 | 关键字段 | 约束 |
 | --- | --- | --- |
@@ -580,7 +733,7 @@ flowchart LR
 
 存储规则：强一致事务库是事实源；队列只搬运工作；缓存可放公开配置、限流计数与短租约，但缓存丢失不得允许重复逻辑 attempt 或丢失结果。敏感通道证据用 KMS 密钥加密、限制操作员访问、有明确保留与删除策略。原始 PAN/CVC 只存在于合规的支付域/token vault 路径。
 
-### 6.4 会话创建与运行时引导
+### C.4 会话创建与运行时引导
 
 `POST /v1/checkout-sessions` 的服务端流程：
 
@@ -592,7 +745,7 @@ flowchart LR
 
 运行时引导接受公钥与 `client_secret`，只返回浏览器安全数据：展示金额、可用方式、locale、frame 地址、外观约束、capability 过期、协议版本。可用方式是**确定性评估**：商户配置、环境、金额/币种、capture 模式、安全的买家/浏览器信号、当前通道可用性。测试环境响应可含方式被抑制的原因码；live 不暴露私有风控与路由规则。
 
-### 6.5 确认与支付编排
+### C.5 确认与支付编排
 
 ```mermaid
 sequenceDiagram
@@ -628,7 +781,7 @@ sequenceDiagram
 - 3DS 等 action 暂停同一 attempt，只存不透明 action 引用、过期与续接状态。action 完成绝不新建 attempt，除非策略已确定性关闭前一个（细节见 §2）。
 - 提交后 processor 超时 → 操作变 unknown，session 锁定禁止盲目重提；对账器用原引用/幂等键查询 processor。只有确定性失败/过期才允许策略开启新 attempt。**结果未明前禁止 processor failover**（两个 processor 可能都授权）。
 
-### 6.6 通道回调、对账与商户事件
+### C.6 通道回调、对账与商户事件
 
 **通道回调**：见 §4.3 的认证与 fail-closed 规则。后台处理把通道引用关联到一个本地操作，归一化事件，调用与同步响应**相同的守卫式迁移函数**。重复与乱序安全：provider-event 去重防重复处理，聚合版本检查防状态回退。
 
@@ -636,7 +789,7 @@ sequenceDiagram
 
 **商户事件与下游账务**：每个外部可见状态迁移在同事务追加版本化 outbox 事件。webhook worker 渲染稳定公共事件，用端点当前密钥版本对时间戳 + 原始体签名，按文档化期限退避重试。**事件创建、端点投递、商户业务效果是三个独立身份、三套去重键**；端点故障不回滚也不改变支付。支付事件同时进入既有的 Transaction 与清分边界，规则见 §1.3。
 
-### 6.7 可靠性、安全与可观测
+### C.7 可靠性、安全与可观测
 
 - 正确性靠数据库唯一约束与聚合版本 CAS；分布式锁只是优化。
 - 状态与 outbox 同事务提交。消费者完成自身幂等效果后再确认。
@@ -649,46 +802,6 @@ sequenceDiagram
 - 关联 `request_id`、凭证 ID、商户、session、attempt、Transaction、provider operation、provider event、outbox event、webhook delivery，不记录秘密值。
 - 按阶段度量确认延迟、processor 超时/unknown 率、未决 attempt 年龄、去重命中、回调验签失败、outbox 滞后、webhook 成功率/年龄、对账不一致、清分失败。
 - 告警看状态年龄与不变量违反，不只看 HTTP 错误率。提供查询、证据重放、端点重放、凭证吊销的操作手册。
-
-## 7. 验收要点
-
-- 商户身份只能从凭证推导。body 自报 `merchant_id` 无效。
-- 浏览器只用公钥 + 会话能力凭证即可挂载。两者解析到同一商户与环境。
-- 浏览器无法改动金额、币种、商户、capture 策略。
-- 原始支付数据不出现在商户可见状态、事件与日志。
-- 重复确认不产生平行逻辑 attempt。购物车变更产生替换 session 而非改金额。
-- 跳转/页面丢失与异步结果可经状态查询与 webhook 恢复。
-- 会话引用替换不能泄露他人订单（含同商户下他人订单）。
-- 重复/乱序的 webhook 与返回页处理，业务效果各恰好一次。
-- 会话创建、幂等响应与浏览器能力原子提交。确认先持久化 attempt 与通道操作键再调 processor。
-- 提交后超时锁定盲目重试并路由对账。同步响应与验证回调共用守卫式迁移函数。
-- 支付状态变更与 outbox 同事务；webhook 投递失败不改变支付状态。
-- `PAID`、`CAPTURED`、上游注资与下游 `SETTLED` 相互区分；只有账务边界移动余额。
-- 3DS 不新增账务分录、不新增 `AUTHENTICATING` 交易枚举值；认证后恢复同一 attempt。
-- 未登记的返回地址与伪造的 frame 消息被拒绝。
-- 浏览器完成态不能直接记账、不能把资金移到 `available`、不能在无服务端证据时触发发货。
-
-## 附录 A. 术语约定
-
-中文里“认证”和“授权”容易混用。本文严格区分三组词：
-
-| 术语 | 含义 | 出现位置 |
-| --- | --- | --- |
-| 认证 (authentication) | 证明“你是谁”：密钥、token、HMAC 签名、3DS 持卡人认证 | §1.2、§2、§4 |
-| 访问授权 (authorization / 鉴权) | 证明“你能对哪个资源做什么”：scope、资源归属校验、买家会话鉴权 | §3、§4、§6 |
-| 支付授权 (funds authorization) | 卡组织意义上的授权请款：`authorized` / `PAID`，与 capture（请款）相对 | §1.1 |
-
-“纯授权”指**不带 3DS 持卡人认证的支付授权**。“认证 + 授权”指 **3DS 持卡人认证完成后继续同一笔支付授权**。金额与账务术语（请款金额、入账金额、结算净额、主币种、MDR 等）遵守 CONTEXT.md 的领域语言。
-
-## 附录 B. 决策总览
-
-| 问题 | 决策 | 关键理由 |
-| --- | --- | --- |
-| 浏览器如何认证 | 双凭证：公开商户标识 `pk_` + 会话级能力凭证 `client_secret`。两者必须解析到同一商户与环境 | 浏览器完全不可信。公钥只选配置；能力凭证把爆炸半径限制在单会话、单操作 |
-| 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；多商户应用用 OAuth 受限 token | 密钥永不进浏览器；商户身份只能从凭证推导，body 自报 `merchant_id` 一律无效 |
-| 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
-| 服务端如何协调 | 凭证服务解析内部 principal，经 mTLS 在服务间传播；状态与事务性 outbox 同事务；统一守卫式迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
-| 时序 | 见 §1（3DS 详细流程见 §2）：纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
 
 ## 延伸阅读（可选）
 
