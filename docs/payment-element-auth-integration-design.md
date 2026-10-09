@@ -270,54 +270,84 @@ confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured
 
 商户主页面被整页跳转是**预期行为**，不是缺陷：跳转前 `actionstart`（type: `"redirect"`）先触发，给商户锁界面的机会；跳转后原页面销毁，收口靠 §3.3 与 §4.2。若商户不接受整页导航，应在配置里只启用内嵌 / 弹窗模式（平台按发卡行支持能力降级）。
 
-对应四种权限的实现样例：
+对应四种权限的实现样例。**所有代码都运行在父页面（商户页）的 JS 上下文里**。先看父页面的骨架和 confirm 响应的总分派，样例 1–3 是被它调用的分支：
 
-**样例 1：SDK 执行整页跳转（处理跳转指令）**
+```html
+<!-- 父页面（商户页）骨架 -->
+<form id="checkout-form">
+  <div id="payment-element"><!-- SDK 在容器内创建字段 iframe 与内嵌挑战框 --></div>
+  <button id="pay-button" type="submit" disabled>Pay</button>
+</form>
+```
 
 ```ts
-// SDK 父侧（运行在商户页上下文）
-function applyAction(action: Action) {
-  if (action.type !== "redirect") return handleOtherAction(action);
+// 父页面里的代码分两层：
+// · 商户代码：表单、按钮、事件回调（见商户接入指南 §4）
+// · SDK 父侧：frame 消息、confirm 响应分派、跳转 / 弹窗 / 内嵌（本节）
+//
+// confirm() 的响应由 SDK 父侧在父页面里统一分派：
+async function onConfirmResponse(res: PlatformResponse) {
+  if (res.kind === "result") return emitResult(res.result); // 直接结果
+
+  // 动作指令：先通知商户（锁界面），再按呈现方式分派
+  emit("actionstart", { type: res.action.type });
+  switch (res.action.presentation) {
+    case "redirect":
+      return applyRedirect(res.action);                  // 样例 1：整页导航
+    case "popup":
+      return openChallengePopup(res.action.url);         // 样例 2：新窗口
+    case "embedded":
+      return mountChallenge(
+        document.querySelector("#payment-element")!,
+        res.action.url,
+      ); // 样例 3：容器内
+  }
+}
+```
+
+**样例 1：整页跳转（由分派的 `redirect` 分支调用）**
+
+```ts
+function applyRedirect(action: Action) {
   // URL 必须是登记过的 3DS 目的域，否则拒绝（防开放跳转）
   if (!isRegisteredRedirectTarget(action.url)) {
     return failWith("invalid_configuration");
   }
-  emit("actionstart", { type: "redirect" }); // 先通知商户锁界面
-  window.location.assign(action.url);        // 整页导航，替换整个页面
+  window.location.assign(action.url); // 整页导航，替换整个页面（含 #payment-element）
   // 此后 JS 上下文销毁；支付结果不从 confirm() 返回
 }
 ```
 
-**样例 2：弹窗——必须在买家手势内，并处理拦截**
+**样例 2：弹窗（`popup` 分支调用）——必须在买家手势内**
 
 ```ts
 function openChallengePopup(url: string): Window {
-  // confirm() 由买家点击 Pay 触发；同步调用 window.open 才享有手势授权
+  // onConfirmResponse 处在买家点击 Pay 的调用链内；
+  // 只有同步调用 window.open 才享有手势授权，否则被浏览器拦截
   const popup = window.open(url, "walletpay-3ds", "width=480,height=640");
   if (!popup) {
-    // 被浏览器拦截：可恢复错误，提示买家允许弹窗后重试
     throw new PaymentError("popup_blocked", { recoverable: true });
   }
-  return popup; // 主页面和组件容器都不动
+  return popup; // 主页面和 #payment-element 都不动
 }
 ```
 
-**样例 3：内嵌挑战——只在容器内呈现**
+**样例 3：内嵌挑战（`embedded` 分支调用）——只在容器内呈现**
 
 ```ts
-function mountChallenge(container: HTMLElement, challengeUrl: string, instanceId: string) {
+function mountChallenge(container: HTMLElement, challengeUrl: string) {
   const frame = document.createElement("iframe");
   frame.src = challengeUrl;     // 发卡行验证页（仅当其允许被嵌入）
   frame.title = "Bank verification";
-  container.appendChild(frame); // 只出现在组件容器内，不导航任何页面
-  // 消息协议与校验同 §3.4；结束后 frame.remove()
+  container.appendChild(frame); // 只出现在 #payment-element 内，不导航任何页面
+  // 消息协议与校验同 §3.4 ⑤；结束后 frame.remove()
 }
 ```
 
-**样例 4：受控字段 iframe 的 sandbox——剥夺顶层导航权**
+**样例 4：受控字段 iframe 的 sandbox——mount 阶段创建，剥夺顶层导航权**
 
 ```html
-<!-- 受控字段 iframe：绝不包含 allow-top-navigation -->
+<!-- SDK 在 mount 时创建的字段 iframe（对应 §3.4 ②）：绝不包含 allow-top-navigation -->
 <iframe
   src="https://payments.walletpay.example/field.html?field=number&instance=inst_123"
   sandbox="allow-scripts allow-same-origin"
