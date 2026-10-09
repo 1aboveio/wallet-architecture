@@ -79,7 +79,7 @@ sequenceDiagram
 
 ### 1.3 银行验证 + 付款（3DS）
 
-多一步“银行确认是本人”。你的代码**不变**，仍是同一个 `confirm()`。
+多一步“银行确认是本人”。你的代码**不变**，仍是同一个 `confirm()`。3DS 在总览里是**黑盒**。它的内部流程单独呈现，见 §7.1。
 
 ```mermaid
 sequenceDiagram
@@ -87,17 +87,17 @@ sequenceDiagram
     participant Page as 你的网页
     participant Server as 你的服务器
     participant Pay as 支付平台
-    participant Bank as 银行
+    participant Bank as 通道和银行
+    participant DS3 as 3DS 认证（黑盒）
 
     Buyer->>Page: 填卡，点 Pay
     Page->>Pay: confirm()
     Pay->>Bank: 请求授权
-    Bank-->>Pay: 需要验证持卡人
-    Pay-->>Page: 弹出银行验证（或跳转银行页面）
-    Buyer->>Bank: 输入验证码 / 在银行 App 确认
-    Bank-->>Pay: 验证结果
-    Pay->>Bank: 继续同一笔授权
-    Bank-->>Pay: 授权结果
+    Bank-->>Pay: 需要 3DS 认证
+    Pay->>DS3: 持卡人认证（内部流程见 §7.1）
+    DS3-->>Pay: 认证结果（通过 / 失败 / 取消）
+    Pay->>Bank: 恢复同一笔授权
+    Bank-->>Pay: 授权 / 请款结果
     alt 浏览器还活着
         Pay-->>Page: captured 或 authorized
     else 已跳转离开
@@ -570,11 +570,45 @@ app.post(
 
 webhook 端点配置在**商户/环境**级（平台后台登记）。不支持为单个订单指定回调地址。
 
-## 7. 结果、呈现方式与异常
+## 7. 3DS 流程详解与结果异常
 
-两种流程的完整时序见 §1.2 与 §1.3。这一章讲结果怎么读、3DS 长什么样、异常怎么办。
+两种流程的时序见 §1.2 与 §1.3。那里的 3DS 是黑盒。这一章单独展开 3DS 流程，并讲结果怎么读、异常怎么办。
 
-### 7.1 3DS 的四种呈现方式
+### 7.1 3DS 流程（单独呈现）
+
+银行验证的内部流程如下。你的代码只有一个 `confirm()`。
+
+```mermaid
+sequenceDiagram
+    actor Buyer as 买家
+    participant Page as 你的网页
+    participant Server as 你的服务器
+    participant Pay as 支付平台
+    participant Bank as 银行
+
+    Buyer->>Page: 填卡，点 Pay
+    Page->>Pay: confirm()
+    Pay->>Bank: 请求授权
+    Bank-->>Pay: 需要验证持卡人
+    Pay-->>Page: 弹出银行验证（或跳转银行页面）
+    Buyer->>Bank: 输入验证码 / 在银行 App 确认
+    Bank-->>Pay: 验证结果
+    Pay->>Bank: 继续同一笔授权
+    Bank-->>Pay: 授权结果
+    alt 浏览器还活着
+        Pay-->>Page: captured 或 authorized
+    else 已跳转离开
+        Note over Page: confirm() 不会有返回。这是正常的。
+    end
+    Pay-->>Server: webhook：最终结果（必达）
+    Server->>Server: 更新订单
+    opt 买家跳回你的页面
+        Buyer->>Page: 跳转回来
+        Page->>Server: 查询权威结果
+    end
+```
+
+### 7.2 3DS 的四种呈现方式
 
 银行验证长什么样由银行决定，你的代码不受影响。四种方式的买家体验：
 
@@ -585,7 +619,7 @@ webhook 端点配置在**商户/环境**级（平台后台登记）。不支持�
 | 整页跳转 | 跳去银行页面再跳回 | `confirm()` 不返回；靠 §5、§6 |
 | 银行 App 跳转 | 拉起银行 App，回来后可能落在浏览器外 | 同上。手机上最常见 |
 
-### 7.2 结果怎么读
+### 7.3 结果怎么读
 
 | 你收到的状态 | 含义 | 你该做什么 |
 | --- | --- | --- |
@@ -601,7 +635,7 @@ webhook 端点配置在**商户/环境**级（平台后台登记）。不支持�
 - **“验证通过”不等于“付款成功”。** 银行验证只证明是持卡人本人。之后授权仍可能被拒（余额不足等）。
 - **“已授权”是否足够发货，是你自己的业务决策。** 平台不替你决定。多数商户以“已扣款”为发货依据。
 
-### 7.3 异常情况对照表
+### 7.4 异常情况对照表
 
 | 情况 | 平台行为 | 你该做什么 |
 | --- | --- | --- |
