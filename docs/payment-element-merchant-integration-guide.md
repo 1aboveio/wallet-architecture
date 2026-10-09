@@ -101,7 +101,7 @@ sequenceDiagram
     alt 浏览器还活着
         Pay-->>Page: captured 或 authorized
     else 已跳转离开
-        Note over Page: confirm() 不会有返回。这是正常的。
+        Note over Page: 跳转指令已随 confirm() 响应下发。<br/>支付结果不从 confirm() 回来，这是正常的。
     end
     Pay-->>Server: webhook：最终结果（必达）
     Server->>Server: 更新订单
@@ -332,7 +332,8 @@ checkout.on("actionend", ({ type, outcome }) => {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  // 注意：整页跳转会销毁 JS 上下文，这个 Promise 可能永不 resolve
+  // 注意：3DS 跳转场景下 confirm() 响应会带跳转 URL，SDK 自动跳转；
+  // 跳转会销毁 JS 上下文，支付结果不会从这个 Promise 回来
   const result = await checkout.confirm({
     returnUrl: "https://shop.example/payments/return",
   });
@@ -590,15 +591,21 @@ sequenceDiagram
     Page->>Pay: confirm()
     Pay->>Bank: 请求授权
     Bank-->>Pay: 需要验证持卡人
-    Pay-->>Page: 弹出银行验证（或跳转银行页面）
-    Buyer->>Bank: 输入验证码 / 在银行 App 确认
+    alt 弹窗 / 内嵌验证框
+        Pay-->>Page: confirm() 响应：验证框（SDK 呈现）
+        Buyer->>Bank: 输入验证码
+    else 整页跳转 / 银行 App
+        Pay-->>Page: confirm() 响应：跳转 URL（发卡行验证页）
+        Page->>Bank: 浏览器跳转到发卡行验证页
+        Buyer->>Bank: 在银行页面或银行 App 完成验证
+    end
     Bank-->>Pay: 验证结果
     Pay->>Bank: 继续同一笔授权
     Bank-->>Pay: 授权结果
     alt 浏览器还活着
         Pay-->>Page: captured 或 authorized
     else 已跳转离开
-        Note over Page: confirm() 不会有返回。这是正常的。
+        Note over Page: 跳转指令已随 confirm() 响应下发。<br/>支付结果不从 confirm() 回来，这是正常的。
     end
     Pay-->>Server: webhook：最终结果（必达）
     Server->>Server: 更新订单
@@ -616,7 +623,7 @@ sequenceDiagram
 | --- | --- | --- |
 | 免打扰 (frictionless) | 无感知，直接出结果 | 无 |
 | 内嵌 / 弹窗挑战 | 组件里弹出银行验证框 | `actionstart`/`actionend` 会触发 |
-| 整页跳转 | 跳去银行页面再跳回 | `confirm()` 不返回；靠 §5、§6 |
+| 整页跳转 | 跳去银行页面再跳回 | `confirm()` 响应带跳转 URL，浏览器自动跳转；页面会销毁，结果靠 §5、§6 |
 | 银行 App 跳转 | 拉起银行 App，回来后可能落在浏览器外 | 同上。手机上最常见 |
 
 ### 7.3 结果怎么读

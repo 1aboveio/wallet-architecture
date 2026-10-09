@@ -131,7 +131,7 @@ sequenceDiagram
         Backend-->>Browser: 经鉴权的结果页
     end
 
-    Note over Platform,Backend: 跳转/关页/挂起导致 Promise 永不 resolve 是常态<br/>收口只能靠签名 webhook + 认证过的状态查询
+    Note over Platform,Backend: 跳转指令随 confirm() 响应下发后，支付结果不再从 Promise 回来<br/>关页/挂起同理；收口只能靠签名 webhook + 认证过的状态查询
 ```
 
 ### 1.3 状态机对照与账务边界
@@ -186,9 +186,10 @@ sequenceDiagram
         Platform-->>Browser: actionend（completed / canceled / failed）
     else 整页跳转 / 银行 App 跳转
         DS-->>Platform: 需要跳转
-        Platform-->>Browser: 跳转去认证（此后不依赖 confirm Promise）
+        Platform-->>Browser: confirm() 响应：跳转指令（发卡行验证 URL）
+        Browser->>DS: 浏览器跳转到发卡行验证页（原 JS 上下文销毁）
         Buyer->>DS: 完成 / 取消 / 放弃认证
-        DS-->>Platform: 认证 + 支付结果（原 JS 上下文已销毁）
+        DS-->>Platform: 认证 + 支付结果
     end
 
     Note over Platform: AUTHENTICATING 只是编排态（不进 Transaction 枚举）<br/>认证完成 ≠ 支付成功
@@ -220,7 +221,7 @@ sequenceDiagram
         Backend-->>Browser: 经鉴权的结果页
     end
 
-    Note over Platform,Backend: 跳转/关页/挂起导致 Promise 永不 resolve 是常态<br/>收口只能靠签名 webhook + 认证过的状态查询
+    Note over Platform,Backend: 跳转指令随 confirm() 响应下发后，支付结果不再从 Promise 回来<br/>关页/挂起同理；收口只能靠签名 webhook + 认证过的状态查询
 ```
 
 ### 2.2 四种呈现模式
@@ -230,7 +231,9 @@ sequenceDiagram
 | 免打扰 (frictionless) | 处理器与发卡行完成认证，买家无交互 | `confirm()` 在同一 attempt 上继续；可省略可见 action UI |
 | 内嵌 / 弹窗挑战 | SDK 在受支持的 frame 或弹窗里呈现发卡行控制的挑战 | 焦点困在挑战内、加载/错误播报、结束后恢复焦点、阻止组件被重复提交 |
 | 弹窗 (popup) | 从买家提交手势打开弹窗 | 检测弹窗拦截，返回可恢复错误或文档化兜底。买家关闭弹窗是取消，不证明付款失败 |
-| 整页跳转 / 银行 App | 跳转到发卡行或处理器目的地 | 当前 `confirm()` Promise 被放弃。返回目标是登记过的商户 URL，只带不透明会话引用 |
+| 整页跳转 / 银行 App | 跳转到发卡行或处理器目的地 | 跳转由 `confirm()` 的响应触发：响应携带发卡行验证 URL，SDK 在浏览器端执行跳转。返回目标是登记过的商户 URL，只带不透明会话引用 |
+
+confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured` / `processing` / `failed`）和**动作指令**。内嵌挑战是指令的一种，由 SDK 自行呈现；跳转指令（`{ type: "redirect", url }`）携带发卡行验证 URL，由 SDK 在浏览器端执行跳转到发卡行。商户代码不接触发卡行 URL，也不接触挑战负载。
 
 ### 2.3 action 事件契约
 
@@ -512,7 +515,7 @@ type PaymentError = {
 };
 ```
 
-约束：错误码稳定且文档化恢复动作；面向买家的文案本地化，不暴露 processor 诊断。提交后的网络超时返回 unknown/processing，**不得**触发对另一 processor 的盲目重试。React 绑定的 identity 类 props 不可变，替换走显式路径。商户侧完整接入代码（服务端建会话、挂载、返回页、webhook 验签）见 [商户接入指南](payment-element-merchant-integration-guide.md) §3–§6。
+约束：错误码稳定且文档化恢复动作；面向买家的文案本地化，不暴露 processor 诊断。提交后的网络超时返回 unknown/processing，**不得**触发对另一 processor 的盲目重试。跳转类动作由 SDK 根据 confirm 响应自动执行（见 §2.2）；跳转会销毁 JS 上下文，`ConfirmResult` 在跳转场景不会回到调用方。React 绑定的 identity 类 props 不可变，替换走显式路径。商户侧完整接入代码（服务端建会话、挂载、返回页、webhook 验签）见 [商户接入指南](payment-element-merchant-integration-guide.md) §3–§6。
 
 ### 5.3 Checkout Session 契约
 
