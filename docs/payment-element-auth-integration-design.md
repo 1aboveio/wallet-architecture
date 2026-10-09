@@ -6,7 +6,7 @@
 
 - 你是**支付平台的工程师或设计评审者**。
 - 你已经了解商户侧的接入形状。新手向的商户视角见 [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)。
-- **本文自成一体。** 本文吸收了英文设计文档、3DS 设计与 ADR 0003/0005 的相关内容。读本文不需要翻阅其他文档，文末链接仅是延伸阅读。若与英文契约原文（[Payment Element SDK design](payment-element-design.md)、[Payment Element 3DS design](payment-element-3ds-design.md)）冲突，以英文为准。
+- **本文自成一体。** 本文吸收了原英文设计文档、3DS 设计与 ADR 0003/0005 的相关内容，是该设计的权威说明。读本文不需要翻阅其他文档，文末链接仅是延伸阅读。
 
 本文回答四个设计问题：
 
@@ -862,12 +862,9 @@ load -> create checkout -> mount -> ready
 
 ## 延伸阅读（可选）
 
-以下文档与本文重叠或更细。理解本文不需要读它们：
+以下文档与本文相关。理解本文不需要读它们：
 
 - [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)（商户视角、新手向、含完整接入代码）
-- [Payment Element SDK design](payment-element-design.md)（英文契约原文）
-- [Payment Element 3DS design](payment-element-3ds-design.md)（3DS 扩展原文）
-- [Stripe Payment Element gap research](stripe-payment-element-gap-research.md)
 - [Payment web SDK and iframe provider survey](payment-sdk-iframe-provider-survey.md)
 - [ADR 0003: transaction status model](adr/0003-transaction-status-model.md)
 - [ADR 0005: ledger invariants](adr/0005-ledger-invariants.md)

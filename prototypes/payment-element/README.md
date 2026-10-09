@@ -2,8 +2,8 @@
 
 Throwaway UI prototype for evaluating the Payment Element integration and 3DS lifecycle described in:
 
-- [`docs/payment-element-design.md`](../../docs/payment-element-design.md)
-- [`docs/payment-element-3ds-design.md`](../../docs/payment-element-3ds-design.md)
+- [`docs/payment-element-merchant-integration-guide.md`](../../docs/payment-element-merchant-integration-guide.md)
+- [`docs/payment-element-auth-integration-design.md`](../../docs/payment-element-auth-integration-design.md)
 
 Run from the repository root:
 

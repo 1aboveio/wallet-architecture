@@ -759,9 +759,7 @@ checkout.on("actionstart", ({ type }) => {
 
 ## 10. 延伸阅读（可选）
 
-以下文档与本文重叠或更深。接入不需要读它们：
+以下文档与本文相关。接入不需要读它们：
 
 - [Payment Element 认证与接入内部设计说明](payment-element-auth-integration-design.md)（平台为什么这样设计）
-- [Payment Element SDK design](payment-element-design.md)（英文契约原文）
-- [Payment Element 3DS design](payment-element-3ds-design.md)（3DS 扩展原文）
 - [CONTEXT.md](../CONTEXT.md)（金额与费用术语的完整定义）
