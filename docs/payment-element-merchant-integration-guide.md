@@ -301,7 +301,9 @@ Content-Type: application/json
 
 为什么这样分：公钥泄露没有风险（它不授权任何付款操作）。会话能力凭证泄露的风险也有限（只能用于这一笔会话、几分钟后过期），但仍要按敏感值对待：不要放进 URL、日志、埋点和截图。
 
-### 4.2 代码（vanilla TypeScript）
+### 4.2 代码（vanilla JS / TypeScript）
+
+JS 与 React 共用同一核心 SDK，行为完全一致，任选一种。纯 JavaScript 项目去掉类型标注即可。
 
 ```ts
 // checkout-page.ts
@@ -358,10 +360,11 @@ form.addEventListener("submit", async (event) => {
 // paymentElement.destroy();
 ```
 
-### 4.3 代码（React）
+### 4.3 代码（React，与 4.2 等价）
 
 ```tsx
-// CheckoutPage.tsx
+// CheckoutPage.tsx —— 与 4.2 覆盖相同的事件与结果处理
+import { useEffect, useState } from "react";
 import {
   WalletPayProvider,
   CheckoutProvider,
@@ -369,15 +372,57 @@ import {
   useCheckout,
 } from "@walletpay/react";
 
-function PayButton() {
-  const { confirm } = useCheckout();
+function CheckoutForm() {
+  const { confirm, on } = useCheckout();
+  const [payEnabled, setPayEnabled] = useState(false);
+
+  // 银行验证 / 跳转期间锁住界面（与 4.2 相同）
+  useEffect(() => {
+    const off1 = on("actionstart", ({ type }) => disableCheckoutNavigation(type));
+    const off2 = on("actionend", ({ type, outcome }) =>
+      restoreCheckoutNavigation(type, outcome),
+    );
+    return () => {
+      off1();
+      off2();
+    };
+  }, [on]);
+
   return (
-    <button
-      type="submit"
-      onClick={() => confirm({ returnUrl: "https://shop.example/payments/return" })}
-    >
-      Pay
-    </button>
+    <>
+      <PaymentElement
+        options={{ layout: "accordion" }}
+        onReady={() => setFormEnabled(true)}
+        onChange={({ complete }) => setPayEnabled(complete)}
+        onLoadError={({ code, requestId }) => showIntegrationError(code, requestId)}
+      />
+      <button
+        type="submit"
+        disabled={!payEnabled}
+        onClick={async () => {
+          // 3DS 跳转场景下响应会带跳转 URL，SDK 自动跳转
+          const result = await confirm({
+            returnUrl: "https://shop.example/payments/return",
+          });
+          switch (result.status) {
+            case "authorized":
+              showAuthorizedState(result.capture);
+              break;
+            case "captured":
+              showPaymentReceived();
+              break;
+            case "processing":
+              showProcessingState();
+              break;
+            case "failed":
+              showPaymentError(result.error);
+              break;
+          }
+        }}
+      >
+        Pay
+      </button>
+    </>
   );
 }
 
@@ -385,20 +430,14 @@ export function CheckoutPage({ publicKey, clientSecret }: Props) {
   return (
     <WalletPayProvider publicKey={publicKey}>
       <CheckoutProvider clientSecret={clientSecret}>
-        <PaymentElement
-          options={{ layout: "accordion" }}
-          onReady={() => setFormEnabled(true)}
-          onChange={({ complete }) => setPayEnabled(complete)}
-          onLoadError={({ code, requestId }) => showIntegrationError(code, requestId)}
-        />
-        <PayButton />
+        <CheckoutForm />
       </CheckoutProvider>
     </WalletPayProvider>
   );
 }
 ```
 
-Pay 按钮由**你**拥有。这样你可以协调“同意条款”、表单校验等周边逻辑。组件内部的支付方式专属按钮（如钱包按钮）由 SDK 管理。
+Pay 按钮由**你**拥有。这样你可以协调“同意条款”、表单校验等周边逻辑。组件内部的支付方式专属按钮（如钱包按钮）由 SDK 管理。React 绑定自动在卸载时销毁 frame 与监听（等价 `destroy()`）；Strict Mode 重放不会重复建会话或 attempt。两种写法行为一致。
 
 ### 4.4 组件事件一览
 

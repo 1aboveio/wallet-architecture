@@ -532,6 +532,41 @@ function destroy() {
 }
 ```
 
+**⑨ 同一核心，两种宿主：vanilla JS 与 React**
+
+frame 管理核心只实现一次。两种宿主只是生命周期接线不同，行为完全一致：
+
+```js
+// vanilla JS：手动接线生命周期
+const fields = createSecureFields({ instanceId, container: "#card" });
+fields.on("change", ({ complete }) => setPayEnabled(complete));
+// 页面离开时
+fields.destroy();
+```
+
+```tsx
+// React：用 effect 接线，卸载即销毁
+function CardFields({ instanceId }: { instanceId: string }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [complete, setComplete] = useState(false);
+
+  useEffect(() => {
+    // Strict Mode 会重复执行 effect：createSecureFields 按 instanceId 幂等，
+    // 不会建两套 frame
+    const fields = createSecureFields({ instanceId, container: hostRef.current! });
+    const off = fields.on("change", ({ complete }) => setComplete(complete));
+    return () => {
+      off();
+      fields.destroy(); // 对应 ⑧：清 frame、监听、在途请求
+    };
+  }, [instanceId]);
+
+  return <div ref={hostRef} data-complete={complete} />;
+}
+```
+
+三个要点：React 绑定是薄封装，不重写支付逻辑；`destroy()` 与组件卸载对齐；Strict Mode 的重复 effect 必须幂等（同 `instanceId` 复用同一批 frame，绝不产生两套）。
+
 配套要求：对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为；frame 地址由平台配置，不可被商户替换。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
 
 ## 4. 服务端认证模型（服务间认证）
