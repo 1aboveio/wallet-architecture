@@ -815,6 +815,32 @@ Idempotency-Key: checkout_order_100123_v1
 3. **`returnUrl` 参数**：不是提交目标。它是跳转类 action 完成后买家回跳的商户地址，创建会话与 confirm 时都要过登记校验（§3.3）。
 4. **跳转目标**：confirm 响应里动作指令携带的发卡行验证 URL（§2.3），由 SDK 导航过去。
 
+**`/v1/confirm` 收到请求后做什么**
+
+1. **入口校验**：限流、CORS（登记 origin）；解析会话能力凭证为 browser principal——校验公钥/凭证同商户同环境、操作含 `confirm`、未过期、未被替换、origin 精确匹配。
+2. **请求校验**：会话 `open` 且未作废；方式引用属于本会话引导出的可用方式；`collect` token 归属本会话与实例；金额一律取会话快照，请求中的任何金额被忽略。
+3. **认领提交键**：重复或并发 confirm 返回既有 attempt 或确定性的“进行中”响应，不产生平行授权。
+4. **先持久化再外呼**：同事务创建 attempt（`PAYING`）与稳定通道操作键，然后才调 processor。
+5. **执行**：`automatic` 模式授权 + 请款一并发起；`manual` 只授权。
+6. **归一化结果**：确定成功、确定失败、需买家动作、pending、unknown（超时）。
+7. **action 编排**：需要 3DS 时生成动作指令（内嵌 / 弹窗 / 跳转指令含发卡行 URL），保存不透明 action 引用、过期与续接状态；Transaction 保持 `PAYING`。
+8. **状态与事件**：按结果更新 attempt / Transaction（`PAID` / `CAPTURED` / failed），状态变更与事件同事务提交。
+9. **响应**：`ConfirmResult` 或动作指令；跳转场景响应含跳转 URL，SDK 导航后 JS 上下文销毁。
+10. **unknown 不重试**：不盲目重试、不换通道，交由查询与对账解决。
+
+一句话：**能力验证 + 幂等防重 + 支付编排 + 3DS action 编排 + 状态投影**。
+
+**还需要补的两个浏览器面端点**
+
+跳转 / 关页场景靠返回页（§3.3）与 webhook（§4.2）收口；但浏览器存活时（内嵌挑战、`processing`），SDK 需要主动通道更新 UX，因此补充：
+
+| 端点 | 触发 | 功能 |
+| --- | --- | --- |
+| `POST /v1/confirmations/{attemptId}/actions/{actionId}/complete` | 内嵌 / 弹窗挑战结束或取消 | 回报 `completed` / `canceled` / `failed`，恢复同一 attempt，返回结果或新指令 |
+| `GET /v1/confirmations/{attemptId}` | action / processing 之后 | 查询本次确认的权威结果（浏览器安全投影） |
+
+明确不做“confirm 响应长挂起等挑战结果”：响应先回动作指令，结束用 follow-up 调用，这样跳转、弹窗、关页三种场景行为一致。浏览器面完整端点清单见附录 C.3。
+
 ### 5.4 生命周期与事件
 
 ```text
@@ -871,7 +897,7 @@ load -> create checkout -> mount -> ready
 
 ## 附录 C. 关键接口清单
 
-按实现方分组的最小接口面。平台/SDK 实现者做 C.1–C.3；商户侧做 C.4。表内“位置”指本文或商户指南的章节，契约细节以对应章节为准。
+按实现方分组的最小接口面。平台/SDK 实现者做 C.1–C.4；商户侧做 C.5。表内“位置”指本文或商户指南的章节，契约细节以对应章节为准。
 
 ### C.1 公共 REST API（平台实现）
 
@@ -896,7 +922,16 @@ load -> create checkout -> mount -> ready
 | `unmount()` / `destroy()` | 清理 frame、监听、在途请求 | 陈旧消息一律拒绝（§3.4 ⑧） |
 | React 绑定（provider + hook） | 同一核心的薄封装 | Strict Mode 幂等、卸载即 destroy（§3.4 ⑨） |
 
-### C.3 frame 消息协议（§3.4）
+### C.3 浏览器面端点（托管运行时，均用会话能力凭证鉴权）
+
+| 端点 | 触发 | 功能（位置） |
+| --- | --- | --- |
+| `POST /v1/checkout-sessions/bootstrap` | `createCheckout` / mount | 返回浏览器安全配置（§5.3） |
+| `POST /v1/confirm` | `confirm()` | 能力与提交键校验、创建 attempt、编排授权/请款与 3DS、返回结果或动作指令（§5.3） |
+| `POST /v1/confirmations/{attemptId}/actions/{actionId}/complete` | 内嵌 / 弹窗挑战结束或取消 | 回报 action 结果，恢复同一 attempt（§5.3） |
+| `GET /v1/confirmations/{attemptId}` | action / processing 之后 | 查询本次确认的权威结果（浏览器安全投影）（§5.3） |
+
+### C.4 frame 消息协议（§3.4）
 
 | 消息 | 方向 | 用途 |
 | --- | --- | --- |
@@ -907,7 +942,7 @@ load -> create checkout -> mount -> ready
 
 配套硬约束：接收五层校验（§3.4 ⑤）、发送精确 `targetOrigin`（§3.4 ④）、sandbox 不含 `allow-top-navigation`（§2.3 样例 4）。
 
-### C.4 商户侧要实现的接口（对应商户接入指南）
+### C.5 商户侧要实现的接口（对应商户接入指南）
 
 | 实现 | 用途 | 位置 |
 | --- | --- | --- |
