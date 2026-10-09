@@ -270,6 +270,63 @@ confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured
 
 商户主页面被整页跳转是**预期行为**，不是缺陷：跳转前 `actionstart`（type: `"redirect"`）先触发，给商户锁界面的机会；跳转后原页面销毁，收口靠 §3.3 与 §4.2。若商户不接受整页导航，应在配置里只启用内嵌 / 弹窗模式（平台按发卡行支持能力降级）。
 
+对应四种权限的实现样例：
+
+**样例 1：SDK 执行整页跳转（处理跳转指令）**
+
+```ts
+// SDK 父侧（运行在商户页上下文）
+function applyAction(action: Action) {
+  if (action.type !== "redirect") return handleOtherAction(action);
+  // URL 必须是登记过的 3DS 目的域，否则拒绝（防开放跳转）
+  if (!isRegisteredRedirectTarget(action.url)) {
+    return failWith("invalid_configuration");
+  }
+  emit("actionstart", { type: "redirect" }); // 先通知商户锁界面
+  window.location.assign(action.url);        // 整页导航，替换整个页面
+  // 此后 JS 上下文销毁；支付结果不从 confirm() 返回
+}
+```
+
+**样例 2：弹窗——必须在买家手势内，并处理拦截**
+
+```ts
+function openChallengePopup(url: string): Window {
+  // confirm() 由买家点击 Pay 触发；同步调用 window.open 才享有手势授权
+  const popup = window.open(url, "walletpay-3ds", "width=480,height=640");
+  if (!popup) {
+    // 被浏览器拦截：可恢复错误，提示买家允许弹窗后重试
+    throw new PaymentError("popup_blocked", { recoverable: true });
+  }
+  return popup; // 主页面和组件容器都不动
+}
+```
+
+**样例 3：内嵌挑战——只在容器内呈现**
+
+```ts
+function mountChallenge(container: HTMLElement, challengeUrl: string, instanceId: string) {
+  const frame = document.createElement("iframe");
+  frame.src = challengeUrl;     // 发卡行验证页（仅当其允许被嵌入）
+  frame.title = "Bank verification";
+  container.appendChild(frame); // 只出现在组件容器内，不导航任何页面
+  // 消息协议与校验同 §3.4；结束后 frame.remove()
+}
+```
+
+**样例 4：受控字段 iframe 的 sandbox——剥夺顶层导航权**
+
+```html
+<!-- 受控字段 iframe：绝不包含 allow-top-navigation -->
+<iframe
+  src="https://payments.walletpay.example/field.html?field=number&instance=inst_123"
+  sandbox="allow-scripts allow-same-origin"
+  title="Card number secure payment field"
+></iframe>
+```
+
+`allow-scripts allow-same-origin` 让 frame 内脚本以正常源运行，父页的精确 origin 校验（§3.4 ⑤）才成立；**关键是不给 `allow-top-navigation` 与 `allow-popups`**，frame 就无权导航主页面或开弹窗。其余 flag 组合以方法级浏览器测试为准。
+
 ### 2.4 action 事件契约
 
 ```ts
@@ -426,6 +483,7 @@ function createSecureField(field: string, instanceId: string): HTMLIFrameElement
   frame.title = `${field} secure payment field`;
   frame.loading = "eager";
   frame.dataset.field = field;   // 接收消息时按它找对应窗口
+  frame.sandbox = "allow-scripts allow-same-origin"; // 不含 allow-top-navigation：无权导航主页面
   hostEl.appendChild(frame);     // 布局由容器样式负责
   return frame;
 }
