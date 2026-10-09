@@ -2,7 +2,7 @@
 
 状态：拟定设计的受控语言改写版。它不是 ADR，也不是已实现的 API。
 
-本文改写 [Payment Element 商户接入与认证技术设计](payment-element-auth-integration-design.md)。原文解释 [Payment Element SDK design](payment-element-design.md) 和 [Payment Element 3DS design](payment-element-3ds-design.md) 的决策。本文只改变写法。本文不改变任何决策。若有冲突，以原文和英文设计文档为准。
+本文改写 [Payment Element 商户接入与认证技术设计](payment-element-auth-integration-design.md)（改写时的合并版）。该文档现已拆分为两篇：[商户接入指南](payment-element-merchant-integration-guide.md)（商户视角）与[内部设计说明](payment-element-auth-integration-design.md)（平台视角）。原文解释 [Payment Element SDK design](payment-element-design.md) 和 [Payment Element 3DS design](payment-element-3ds-design.md) 的决策。本文只改变写法。本文不改变任何决策。若有冲突，以原文和英文设计文档为准。
 
 ## 0. 改写规则
 
