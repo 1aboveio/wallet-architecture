@@ -1,34 +1,50 @@
-# Payment Element 商户接入与认证技术设计
+# Payment Element 认证与接入内部设计说明
 
-状态：拟定设计的中文决策说明；不是已通过的 ADR，也不是已实现的 API。本文解释并细化 [Payment Element SDK design](payment-element-design.md) 与 [Payment Element 3DS design](payment-element-3ds-design.md) 中已经做出的决策，覆盖五个问题：浏览器端如何认证、服务端如何做服务间认证、商户用什么包接入、服务端如何与其他服务协调、整体时序是什么样。契约细节以英文设计文档为准；本文与之冲突时以英文设计文档为准。
+状态：拟定设计；不是已通过的 ADR，也不是已实施的 API。
+
+## 写给谁看
+
+- 你是**支付平台的工程师或设计评审者**。
+- 你已经了解商户侧的接入形状。新手向的商户视角见 [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)。本文只讲平台侧的决策、约束与理由。
+- 英文契约原文是 [Payment Element SDK design](payment-element-design.md) 与 [Payment Element 3DS design](payment-element-3ds-design.md)。本文与之冲突时，以英文设计文档为准。
+
+本文回答五个设计问题：
+
+| 问题 | 章节 |
+| --- | --- |
+| 浏览器端如何认证（商户客户端） | §2 |
+| 服务端如何做服务间认证 | §3 |
+| 提供什么包 / SDK，商户如何接入 | §4 |
+| 服务端如何与其他服务协调 | §5 |
+| 整体时序（纯授权、认证 + 授权） | §6 |
 
 ## 0. 术语约定
 
-中文里“认证”和“授权”容易混用，本文严格区分三组词：
+中文里“认证”和“授权”容易混用。本文严格区分三组词：
 
-| 术语 | 含义 | 本文出现位置 |
+| 术语 | 含义 | 出现位置 |
 | --- | --- | --- |
 | 认证 (authentication) | 证明“你是谁”：密钥、token、HMAC 签名、3DS 持卡人认证 | §2、§3、§6.2 |
 | 访问授权 (authorization / 鉴权) | 证明“你能对哪个资源做什么”：scope、资源归属校验、买家会话鉴权 | §2、§3、§5 |
 | 支付授权 (funds authorization) | 卡组织意义上的授权请款：`authorized` / `PAID`，与 capture（请款）相对 | §6.1 |
 
-“纯授权”指**不带 3DS 持卡人认证的支付授权**；“认证 + 授权”指**3DS 持卡人认证完成后继续同一笔支付授权**。
+“纯授权”指**不带 3DS 持卡人认证的支付授权**。“认证 + 授权”指 **3DS 持卡人认证完成后继续同一笔支付授权**。
 
 ## 1. 决策总览
 
-| 问题 | 决策 | 关键依据 |
+| 问题 | 决策 | 关键理由 |
 | --- | --- | --- |
-| 浏览器如何认证 | 双凭证：公开商户标识 `pk_` + 会话级能力凭证 `client_secret`；两者必须解析到同一商户与环境 | 浏览器不可持有任何服务端密钥；`pk_` 只选配置，不授权支付 |
-| 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；平台/多商户应用用 OAuth 授权码获得的受限 access token | 密钥永不进入浏览器；商户身份从凭证推导，不允许 body 里自报 `merchant_id` |
-| 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 服务端 SDK | 支付行为只实现一次；vanilla 与 React 共享同一核心；敏感采集永远在受控支付域 |
-| 服务端如何协调 | 凭证服务解析内部 principal 后经 mTLS/工作负载身份在服务间传播；状态变更与事务性 outbox 同事务提交；统一的守卫式状态迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
-| 时序 | 纯授权一条链路；认证 + 授权在同一个 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证的状态查询收口 | 3DS 跳转可能销毁 JS 上下文，`confirm()` 的 Promise 不可依赖 |
+| 浏览器如何认证 | 双凭证：公开商户标识 `pk_` + 会话级能力凭证 `client_secret`。两者必须解析到同一商户与环境 | 浏览器完全不可信。公钥只选配置；能力凭证把爆炸半径限制在单会话、单操作 |
+| 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；多商户应用用 OAuth 受限 token | 密钥永不进浏览器；商户身份只能从凭证推导，body 自报 `merchant_id` 一律无效 |
+| 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
+| 服务端如何协调 | 凭证服务解析内部 principal，经 mTLS 在服务间传播；状态与事务性 outbox 同事务；统一守卫式迁移函数 | 浏览器和通道回调都不可信；每个外部可见状态变更恰好产生一次事实事件 |
+| 时序 | 纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
 
-## 2. 浏览器端认证（商户客户端）
+## 2. 浏览器能力模型（客户端认证）
 
-### 决策
+### 2.1 决策与威胁模型
 
-浏览器持有两样凭证，缺一不可，且都不是密钥：
+浏览器持有两个凭证。两个都不是密钥：
 
 ```ts
 const walletPay = await loadWalletPay({
@@ -40,46 +56,57 @@ const checkout = await walletPay.createCheckout({
 });
 ```
 
-- **公钥 `pk_`（publishable merchant identifier）**：公开值，可出现在前端代码与页面。它只用于选择公开配置（可用支付方式、locale、外观约束、frame 地址等），**不授权任何支付操作**。
-- **`client_secret`（Checkout Session 能力凭证）**：由商户后端在服务端创建 Checkout Session 时获得，只返回给需要它的那一个买家上下文。它授权的是**对单个 Checkout Session 的有限操作**（初始只有 `confirm`）。
+设计的出发点是三条威胁假设：
 
-平台侧校验：公钥与 `client_secret` 必须解析到**同一商户、同一环境**（test/live 不可交叉）。校验逻辑与服务端凭证同源（见 §3.4 的 credential service），浏览器凭证走 lookup 前缀 + verifier 的同一模式，但只解析出一个会话级 capability。
+1. **商户页面完全不可信。** 页面可以被篡改、被伪造、被中间人。支付字段隔离不能使页面可信。
+2. **前端持有的任何值都可能泄露。** 因此前端不持有能做管理操作的凭证。
+3. **单点泄露的爆炸半径必须有限。** 因此浏览器凭证的有效范围是“一个会话、一个操作、几分钟”。
 
-### `client_secret` 的绑定范围
+由此拆成两层：
 
-签发时固化，验证时逐项检查：
+- **公钥 `pk_`（publishable merchant identifier）**：公开值，可出现在前端代码。它只选择公开配置（可用支付方式、locale、外观约束、frame 地址）。它**不授权任何支付操作**，泄露无害。
+- **`client_secret`（会话能力凭证）**：由商户后端在创建 Checkout Session 时获得，只返回给需要它的那一个买家上下文。它授权**对单个 Checkout Session 的有限操作**（初始只有 `confirm`）。它是 bearer capability，泄露有界但按敏感值对待。
 
-- 商户与环境；
-- Checkout Session 与不可变的订单版本（`order_version`）；
-- 金额、币种、capture 模式（货币快照不可被浏览器 patch）；
-- 允许的浏览器操作（初始仅 `confirm`）；
-- 允许的浏览器 origin（精确匹配，纵深防御项）；
-- 过期时间与替换状态（购物车变更产生新 session，旧 capability 失效）；
-- 确认提交策略（重复提交防护）。
+平台校验公钥与 `client_secret` 解析到**同一商户、同一环境**（test/live 不可交叉）。浏览器凭证与服务端凭证共用 credential service 的「查找前缀 + verifier」模式，但只解析出一个会话级 capability。不用 cookie 会话的原因：SDK 要跨站嵌入商户页和 WebView，cookie 语义与 CSRF 面都不合适。
 
-### 明确禁止
+### 2.2 能力凭证的绑定与验证路径
 
-`client_secret` **不得**用于：修改金额、跨商户操作、capture/refund 管理、读取任意客户数据、创建新 session。它不得出现在 URL、持久化存储、埋点/分析、客服截图和日志中。Origin 校验只是纵深防御，**不能替代能力凭证验证**。
+签发时固化以下绑定。验证时逐项检查。每一项对应一个具体威胁：
 
-浏览器事件（`ready` / `change` / `actionend` 等）只是 UI 状态信号，不是支付事实；不存在名为 `paymentSucceeded` 的浏览器事件。支付事实只能来自服务端认证过的状态查询与签名 webhook。
+| 绑定项 | 防什么 |
+| --- | --- |
+| 商户与环境 | 跨商户冒用、test 泄漏进 live |
+| Checkout Session 与不可变订单版本（`order_version`） | 一笔凭证被挪去付另一笔订单 |
+| 金额、币种、capture 模式 | 浏览器篡改货币快照 |
+| 允许的操作（初始仅 `confirm`） | 能力凭证被用于管理操作 |
+| 允许的浏览器 origin（精确匹配） | 凭证被第三方站点盗用（纵深防御，不替代验证） |
+| 过期时间与替换状态 | 购物车变更后旧凭证继续可用 |
+| 确认提交策略 | 重复提交造成平行授权 |
 
-### 返回页（return page）的鉴权
+明确禁止：会话能力凭证**不得**授权金额变更、跨商户操作、capture/refund 管理、任意客户数据读取、创建新会话。它不得进入 URL、持久化存储、埋点、日志。
 
-3DS 跳转、钱包跳转后回到商户页时，URL 只携带**不透明会话引用**：
+实现约束：
 
-```text
-https://shop.example/payments/return?checkout_session=cs_01J...
-```
+- `browser_capability` 持久记录 capability ID、session ID、verifier、允许操作、过期与吊销状态。
+- 普通会话查询永不返回 `client_secret`。只有幂等重放（文档化的保留窗口内）返回原始响应。
+- 限流与 origin 检查减少滥用，但不替代能力验证。
+- 浏览器事件（`ready` / `change` / `actionend` 等）只是 UI 状态。不存在 `paymentSucceeded` 事件。支付事实只能来自服务端认证过的查询与签名 webhook。
 
-不携带 `success=true` 之类的可信参数，更不携带 `client_secret`。返回页把引用交给商户后端；后端用服务端凭证向平台查权威状态，验证资源归属，再**按 session 内嵌绑定的订单**对买家（或游客）会话做访问授权。浏览器提交的订单号不是权威：订单必须从查询回来的 session 绑定里推导。未授权的查询不返回任何跨订单的状态或买家数据，即使引用的 session 属于同一商户。
+### 2.3 返回页鉴权的平台语义
 
-## 3. 服务端对服务端认证
+跳转返回的 URL 只携带不透明会话引用（`checkout_session=cs_01J...`），不携带 `success=true` 与 `client_secret`。平台侧的资源投影必须满足：
 
-一共四个方向，凭证互不通用、不可互换。
+- `GET /v1/checkout-sessions/{id}` 用服务端凭证鉴权，验证商户资源归属；
+- 商户后端按 session 的**固定绑定**推导订单，浏览器提交的订单号不是权威；
+- 未授权查询不返回任何跨订单状态或买家数据，即使引用属于同一商户。
+
+## 3. 服务端认证模型（服务间认证）
+
+四个方向，凭证互不通用、不可互换。
 
 ### 3.1 商户后端 → 平台（管理面 API）
 
-直连商户使用**分环境的 Bearer 私密钥**：
+直连商户用分环境的 Bearer 私密钥：
 
 ```http
 POST /v1/checkout-sessions
@@ -88,21 +115,18 @@ Idempotency-Key: checkout_order_100123_v1
 Content-Type: application/json
 ```
 
-凭证解析出 `merchant_id`、环境（test/live）、允许的操作、账户状态、已开通能力、可选的 submerchant 范围。**请求 body 里的 `merchant_id` 永远不是权威**——商户身份只能从凭证推导。
+决策要点：
 
-电商平台、SaaS 插件等多商户应用走 **OAuth 授权**：access token 限定到被连接商户与被授权操作。插件**不得**在存在委托连接时索要商户的无限制平台密钥。
-
-密钥生命周期要求：
-
-- test / live 凭证严格分离（签发者、密钥、资源、数据库、队列全部隔离）；
-- 私密钥只在创建时展示一次；存储只存单向 verifier（或协议要求可恢复时存 KMS 加密值）；支持重叠轮换窗口，吊销立即生效；
-- 审计与请求日志只记**凭证 ID**，不记密钥值；
-- 支持即时吊销，并暴露最后使用时间；
-- 每个操作按商户、环境、资源归属、capability 四维授权。
+- 凭证解析出 `merchant_id`、环境、允许操作、账户状态、已开通能力、可选 submerchant 范围。**body 里的 `merchant_id` 永远不是权威。**
+- 多商户应用（电商平台、SaaS 插件）走 OAuth 授权。access token 限定到被连接商户与被授权操作。存在委托连接时，插件不得索要商户的无限制平台密钥。
+- 服务端 bearer 秘密含非机密查找前缀 + 高熵秘密材料。存储只存单向 verifier。仅当协议要求可恢复时存 KMS 加密值。
+- OAuth token 验证 issuer、audience、过期、吊销、商户绑定与 scope。test/live 的 issuer、密钥、资源全部隔离。
+- 轮换支持重叠窗口。吊销在授权层立即生效。
+- 审计与请求日志只记**凭证 ID** 与脱敏指纹，不记密钥值。
 
 ### 3.2 平台 → 商户后端（业务 webhook）
 
-平台推送给商户的事件使用**独立的端点级签名密钥**（与 API 私密钥、浏览器凭证都不通用）。建议信封：
+平台推送给商户的事件用**端点级签名密钥**（与 API 私密钥、浏览器凭证都不通用）。信封：
 
 ```http
 WalletPay-Event-Id: evt_...
@@ -110,16 +134,16 @@ WalletPay-Timestamp: 178...
 WalletPay-Signature: v1=<hmac>
 ```
 
-HMAC 覆盖 **时间戳 + 原始请求体**。商户侧处理顺序是硬性要求：验签与新鲜度 → **先持久化事件再应答** → 按 `event_id` 去重 → 业务效果幂等应用。投递语义是至少一次、不保证顺序；因此商户必须用同一个幂等的订单更新/履约函数承接乱序和重复。端点配置归属商户/环境级，**不允许**每个 session 自带任意回调 URL（防开放跳转与 SSRF）。
+决策要点：HMAC 覆盖**时间戳 + 原始请求体**。商户处理顺序是硬性要求：验签与新鲜度 → 先持久化再应答 → 按 `event_id` 去重 → 业务效果幂等。投递语义是至少一次、不保证顺序。端点配置归属商户/环境级，**不允许** per-session 回调 URL（防开放跳转与 SSRF）。webhook 投递失败不得回滚或改变支付状态。
 
 ### 3.3 通道 → 平台（provider 回调）
 
-每个 processor adapter 自己负责其通道账户/环境的回调认证。Ingress 读取**未修改的原始 body**，按通道要求验签/时间戳或 mTLS，通道账户从配置推导（不信任 payload 里的商户字段），**先落库再返回成功**。验签失败、跨环境、不支持的回调一律 fail-closed，产生安全信号但不改变支付状态。
+每个 processor adapter 负责其通道账户/环境的回调认证。ingress 读取**未修改的原始 body**，验签/时间戳或 mTLS，通道账户从配置推导（不信任 payload 商户字段），**先落库再返回成功**。验签失败、跨环境、不支持的回调一律 fail-closed：产生安全信号，不改变支付状态。
 
 ### 3.4 平台内部服务之间
 
-- 传输层：服务间 **mTLS 或工作负载身份**；adapter 与 webhook 投递 worker 只拿到各自需要的密钥（KMS/密钥管理器按需下发）。
-- 语义层：edge 把凭证材料交给 credential service，换回内部 principal，之后所有下游调用携带它，且**在资源属主服务上重复归属校验**：
+- 传输层：**mTLS 或工作负载身份**。adapter 与 webhook 投递 worker 只获得各自需要的密钥（KMS 按需下发）。
+- 语义层：edge 把凭证材料交给 credential service，换回内部 principal。所有下游调用携带它，且**在资源属主服务上重复归属校验**：
 
 ```ts
 type RequestPrincipal = {
@@ -133,266 +157,51 @@ type RequestPrincipal = {
 };
 ```
 
-任何下游服务**不接受**来自未验证请求体或浏览器声明的 `merchant_id`、environment、scopes。日志与 trace 只记录凭证 ID 与脱敏指纹；授权头、client secret、支付凭证、设备数据、原始回调体全部脱敏。
+任何下游服务**不接受**未验证请求体或浏览器声明的 `merchant_id`、environment、scopes。日志与 trace 只记凭证 ID 与脱敏指纹。授权头、client secret、支付凭证、设备数据、原始回调体全部脱敏。
 
-## 4. 包 / SDK 与商户接入方式
+## 4. SDK 与对外契约
 
-### 决策
+### 4.1 分发形态
 
-框架无关的 TypeScript 核心 + 薄框架绑定；支付行为只实现一次。拟定的分发形态（包名为拟定，尚未实施）：
+框架无关的 TypeScript 核心 + 薄框架绑定；支付行为只实现一次。包名为拟定名：
 
 | 包 / 构件 | 形态 | 职责 |
 | --- | --- | --- |
-| 托管运行时（类似 `js.stripe.com`） | 平台支付域托管脚本 | 实际运行时；敏感采集与 frame 管理的唯一实现；npm 侧只做加载与类型定义 |
-| `@walletpay/checkout-js` | npm（细加载器） | `loadWalletPay()`、`createCheckout()`、`createPaymentElement()`、`confirm()`、事件与销毁；TypeScript 类型 |
-| `@walletpay/react` | npm | `WalletPayProvider` / `CheckoutProvider` / `PaymentElement` 薄包装；处理 Strict Mode 重放、卸载清理；不重复实现支付逻辑 |
-| `@walletpay/node`（服务端 SDK，可选薄封装） | npm | 对 `/v1/*` REST 的签名、幂等键、重试封装；**私密钥只在此层** |
-| REST API `/v1/*` | HTTP | 权威契约；不用 SDK 也能接 |
+| 托管运行时（类似 `js.stripe.com`） | 平台支付域托管脚本 | 实际运行时；敏感采集与 frame 管理的唯一实现 |
+| `@walletpay/checkout-js` | npm 细加载器 | `loadWalletPay()`、`createCheckout()`、`createPaymentElement()`、`confirm()`、事件与销毁；类型 |
+| `@walletpay/react` | npm | provider 薄包装；Strict Mode 重放、卸载清理；不重复支付逻辑 |
+| `@walletpay/node`（可选） | npm | `/v1/*` 的签名、幂等键、重试封装；私密钥只在此层 |
+| REST API `/v1/*` | HTTP | 权威契约。不用 SDK 也能接 |
 
-选型理由：与 [Payment web SDK and iframe provider survey](payment-sdk-iframe-provider-survey.md) 的结论一致——JS 是集成/运行层，跨域 iframe 是隔离边界；托管运行时保证补丁与支付方式更新无需商户发版，npm 细加载器保证类型安全与 tree-shaking，薄 React 绑定避免行为分叉。
+理由：JS 是集成层，跨域 iframe 是隔离边界（见 [provider survey](payment-sdk-iframe-provider-survey.md)）；托管运行时使支付方式更新不依赖商户发版；细加载器保类型安全；薄绑定避免行为分叉。
 
-### 商户接入四步
+### 4.2 对外契约片段
 
-**① 服务端（唯一持有密钥的一侧）**：创建 Checkout Session，金额用货币最小单位（`1099` = USD 10.99），购物车变更 → 新 `order_version` + 替换 session（绝不原地改金额）。先看等价的 REST 契约（SDK 只是它的封装，不用 SDK 也能接）：
-
-```http
-POST /v1/checkout-sessions
-Authorization: Bearer sk_test_...
-Idempotency-Key: checkout_order_100123_v1
-```
-
-```json
-{
-  "merchant_order_reference": "ORDER-100123",
-  "order_version": 1,
-  "amount": { "value": 1099, "currency": "USD" },
-  "capture_mode": "automatic",
-  "return_url": "https://shop.example/payments/return",
-  "locale": "en-US",
-  "expires_in_seconds": 1800
-}
-```
-
-同一操作的服务端 SDK 写法（`@walletpay/node`，私密钥只存在于服务端进程）：
+商户侧完整接入代码见 [商户接入指南](payment-element-merchant-integration-guide.md) §3–§6。平台契约的权威形状：
 
 ```ts
-// server/checkout.ts
-import { WalletPay } from "@walletpay/node";
+type ConfirmResult =
+  | { status: "authorized"; paymentId: string; capture: "manual" | "pending" | "failed"; error?: PaymentError }
+  | { status: "captured"; paymentId: string }
+  | { status: "processing"; paymentId?: string; reason: "pending_method" | "unknown_outcome" }
+  | { status: "failed"; paymentId?: string; error: PaymentError };
 
-// sk_test_... / sk_live_...；绝不出现在前端代码或响应里
-const walletpay = new WalletPay(process.env.WALLETPAY_SECRET_KEY!);
-
-app.post("/api/checkout", async (req, res) => {
-  const order = await loadOrder(req); // 商户自己的权威订单与总价
-
-  const session = await walletpay.checkoutSessions.create(
-    {
-      merchant_order_reference: order.reference,
-      order_version: order.version,
-      amount: { value: order.totalMinor, currency: order.currency },
-      capture_mode: "automatic",
-      return_url: "https://shop.example/payments/return",
-      locale: "zh-CN",
-      expires_in_seconds: 1800,
-    },
-    // 幂等键必须持久稳定：同一逻辑请求重试不得创建第二个 session
-    { idempotencyKey: `checkout_${order.reference}_v${order.version}` },
-  );
-
-  // 只把 client_secret 发给该买家的浏览器上下文
-  res.json({
-    clientSecret: session.client_secret,
-    publicKey: "pk_test_merchant",
-  });
-});
+type PaymentError = {
+  code:
+    | "invalid_configuration" | "session_expired" | "validation_failed"
+    | "authentication_failed" | "payment_declined" | "capture_failed"
+    | "action_canceled" | "popup_blocked" | "network_error" | "unknown_outcome";
+  category: "integration" | "buyer" | "payment" | "network";
+  requestId?: string;
+  recoverable: boolean;
+};
 ```
 
-**② 浏览器**：加载 → 建 checkout → 挂载 → 确认：
+约束：错误码稳定且文档化恢复动作；面向买家的文案本地化，不暴露 processor 诊断。提交后的网络超时返回 unknown/processing，**不得**触发对另一 processor 的盲目重试。React 绑定的 identity 类 props 不可变，替换走显式路径。
 
-```ts
-// checkout-page.ts
-import { loadWalletPay } from "@walletpay/checkout-js";
+## 5. 服务端与其他服务的协调
 
-// publicKey 与 clientSecret 来自 ① 的商户后端接口
-const walletPay = await loadWalletPay({ publicKey });
-const checkout = await walletPay.createCheckout({ clientSecret });
-
-const paymentElement = checkout.createPaymentElement({ layout: "accordion" });
-paymentElement.mount("#payment-element");
-
-paymentElement.on("ready", () => setFormEnabled(true));
-paymentElement.on("change", ({ complete, paymentMethod }) => {
-  setPayEnabled(complete); // 只用它驱动按钮态
-  recordSelectedMethod(paymentMethod);
-});
-paymentElement.on("loaderror", ({ code, requestId }) => {
-  showIntegrationError(code, requestId);
-});
-
-// 3DS / 跳转类 action 的 UX 协调（语义见 3DS 设计）
-checkout.on("actionstart", ({ type }) => disableCheckoutNavigation(type));
-checkout.on("actionend", ({ type, outcome }) => {
-  restoreCheckoutNavigation(type, outcome);
-});
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  // 注意：整页跳转会销毁 JS 上下文，这个 Promise 可能永不 resolve
-  const result = await checkout.confirm({
-    returnUrl: "https://shop.example/payments/return",
-  });
-
-  switch (result.status) {
-    case "authorized":
-      showAuthorizedState(result.capture); // manual / pending / failed
-      break;
-    case "captured":
-      showPaymentReceived();
-      break;
-    case "processing":
-      showProcessingState(); // 延迟方法或未知结果
-      break;
-    case "failed":
-      showPaymentError(result.error);
-      break;
-  }
-});
-
-// 路由离开或组件卸载时清理 frame 与监听
-// paymentElement.destroy();
-```
-
-React 版把同样的对象放进 provider。绑定层只在浏览器初始化，容忍 Strict Mode 重放，卸载时销毁监听与 frame。身份类 provider props 不可变；更换商户/环境/client secret 走显式替换路径。
-
-```tsx
-// CheckoutPage.tsx
-import {
-  WalletPayProvider,
-  CheckoutProvider,
-  PaymentElement,
-  useCheckout,
-} from "@walletpay/react";
-
-function PayButton() {
-  const { confirm } = useCheckout();
-  return (
-    <button
-      type="submit"
-      onClick={() => confirm({ returnUrl: "https://shop.example/payments/return" })}
-    >
-      Pay
-    </button>
-  );
-}
-
-export function CheckoutPage({ publicKey, clientSecret }: Props) {
-  return (
-    <WalletPayProvider publicKey={publicKey}>
-      <CheckoutProvider clientSecret={clientSecret}>
-        <PaymentElement
-          options={{ layout: "accordion" }}
-          onReady={() => setFormEnabled(true)}
-          onChange={({ complete }) => setPayEnabled(complete)}
-          onLoadError={({ code, requestId }) => showIntegrationError(code, requestId)}
-        />
-        <PayButton />
-      </CheckoutProvider>
-    </WalletPayProvider>
-  );
-}
-```
-
-**③ 返回页**：只收不透明 session 引用 → 转后端查权威状态（见 §2）。浏览器侧只取引用，不解析任何“成功”参数：
-
-```ts
-// /payments/return（浏览器）
-const ref = new URLSearchParams(location.search).get("checkout_session");
-const res = await fetch(`/api/checkout/result?session=${encodeURIComponent(ref)}`, {
-  credentials: "include", // 带买家会话，供后端做访问授权
-});
-renderResult(await res.json());
-```
-
-```ts
-// server/result.ts
-app.get("/api/checkout/result", async (req, res) => {
-  const buyer = await authenticateBuyer(req); // 商户自己的买家 / 游客鉴权
-  const session = await walletpay.checkoutSessions.retrieve(req.query.session);
-
-  // 订单从 session 的固定绑定推导。浏览器提交的订单号不是权威。
-  const order = await loadOrder(session.merchant_order_reference, session.order_version);
-  if (!order || order.buyerId !== buyer.id) {
-    return res.status(404).end(); // 不泄露任何跨订单数据
-  }
-
-  const payment = session.payment_id
-    ? await walletpay.payments.retrieve(session.payment_id)
-    : null;
-  res.json({
-    status: payment?.status ?? session.payment_status,
-    capture: payment?.capture,
-  });
-});
-```
-
-**④ Webhook 端点**：验签 + 先落库 + `event_id` 去重 + 幂等业务效果（见 §3.2）。硬性顺序：验签 → 落库 → 应答 → 幂等应用：
-
-```ts
-// server/webhook.ts —— 必须用原始 body 验签，不能先 JSON 解析
-import crypto from "node:crypto";
-
-app.post(
-  "/api/walletpay-webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const eventId = req.get("WalletPay-Event-Id");
-    const timestamp = req.get("WalletPay-Timestamp");
-    const signature = req.get("WalletPay-Signature") ?? "";
-    const rawBody = req.body;
-
-    // 1) 新鲜度：拒绝过期时间戳，防重放
-    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
-      return res.status(400).end();
-    }
-
-    // 2) 验签：HMAC-SHA256(端点签名密钥, `${timestamp}.${rawBody}`)
-    const expected =
-      "v1=" +
-      crypto
-        .createHmac("sha256", process.env.WALLETPAY_WEBHOOK_SECRET!)
-        .update(`${timestamp}.`)
-        .update(rawBody)
-        .digest("hex");
-    const valid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected),
-    );
-    if (!valid) return res.status(400).end();
-
-    // 3) 先落库，再应答；按 event_id 去重
-    const event = JSON.parse(rawBody.toString());
-    const isNew = await db.insertEventIfNew(eventId, event);
-    res.status(200).end();
-
-    // 4) 业务效果幂等应用。与返回页共用同一个函数。
-    if (isNew) await applyOrderEffectsOnce(event);
-  },
-);
-```
-
-签名串构造（`时间戳 + "." + 原始 body`）为拟定示例，最终以契约为准。投递语义是至少一次且不保序，所以 3)、4) 的去重与幂等是硬性要求，不是优化项。
-
-### 商户侧职责边界
-
-- 商户拥有：购物车、权威总价、订单摘要、普通 Pay 按钮（便于协调同意条款与表单校验）。
-- SDK 拥有：多支付方式 UI、敏感输入框（受控支付域跨域 iframe）、方法专属按钮（钱包/平台规则要求时）、`confirm()` 编排与重复提交防护。
-- 商户**不能**：接触原始 PAN/CVC；从点击或 UI 回调推断成功；改动金额/币种/商户/capture 策略；依赖每次 `confirm()` 的 Promise 都会 resolve（跳转会销毁 JS 上下文）。
-- 手工请款、取消、退款是相邻的服务端 API（同样走服务端认证 + 归属校验 + 持久化幂等键），**不是**浏览器 SDK 功能。
-
-## 5. 服务端如何与其他服务协调
-
-### 服务边界（逻辑划分，不要求一服务一部署）
+### 5.1 服务边界（逻辑划分，不要求一服务一部署）
 
 ```mermaid
 flowchart LR
@@ -423,21 +232,34 @@ flowchart LR
     KMS --> Hooks
 ```
 
-### 协调原则（决策）
+| 组件 | 拥有 | 不得拥有 |
+|---|---|---|
+| API 网关 | TLS、限流、版本路由、request ID | 从 body 推断商户身份；支付状态迁移 |
+| 凭证与能力服务 | API key/OAuth/浏览器能力验证、principal 解析 | 结账金额；processor 决策 |
+| Checkout Session 服务 | 不可变订单快照、过期/替换、允许 origin、公开状态投影 | 原始支付凭证；商户履约状态 |
+| Payment Element 运行时 | 可用方式引导、frame 配置、浏览器安全确认 API | 商户密钥；权威账务状态 |
+| 支付编排器 | 一个逻辑 attempt、action 续接、超时分类、归一化结果 | PAN/CVC 存储；直接改余额 |
+| Processor adapter | 通道认证、报文翻译、通道幂等、验签 | 跨通道公共策略；字符串式改核心状态 |
+| 通道回调 ingress | 原始体验签、持久收执、去重后应答 | 商户 webhook 投递；同步履约 |
+| 商户 webhook 投递 | 签名信封、重试计划、投递证据与重放 | 从投递结果发明新支付状态 |
+| 对账 worker | 查询未决操作、导入通道报表、发现不一致 | 对另一通道盲目重发不确定授权 |
+| 清分与账务消费者 | ADR 定义的 Transaction 迁移、`CAPTURED` 清分、不可变分录 | 浏览器会话状态；回调字面解释 |
 
-1. **凭证集中解析，principal 全程传播**。只有 credential service 碰原始凭证材料；下游只认 `RequestPrincipal`，并在属主服务上重复资源归属校验（§3.4）。
-2. **状态与 outbox 同事务提交**。每个外部可见的状态迁移在同一事务里追加版本化 `outbox_event`；队列只搬运工作，不是事实源。消费者在自己完成幂等效果后才确认。
-3. **统一守卫式状态迁移函数**。同步响应与验证过的通道回调走同一个迁移函数：校验当前状态、操作类型、金额与通道证据后才写入 attempt/Transaction 新状态；乱序、重复的通道事件由 provider-event 去重 + 聚合版本 CAS 兜底，状态不可回退。
-4. **提交前持久化，超时进对账**。先认领 session 级 submission key、写入 attempt 与稳定的通道操作键，再调用 processor；通道超时后操作进入 unknown，session 锁定禁止盲目重提，由对账 worker 用原引用/幂等键向通道查询。**禁止**在结果未明时切换通道重试（可能双重授权）。
-5. **与账务的衔接只走一条边界**。支付证据 → Transaction 状态（[ADR 0003](adr/0003-transaction-status-model.md)）：授权成功进 `PAID`；请款成功进 `CAPTURED` 并发幂等清分命令；清分一次算出余额变动与不可变分录，商户净额进 `pending`；通道注资是上游 `SETTLEMENT` 动账，**不**置 `SETTLED`；只有下游商户结算进程把 `CAPTURED` 置 `SETTLED`、资金从 `pending` 转 `available`（[ADR 0005](adr/0005-ledger-invariants.md)）。浏览器结果、webhook 投递结果、通道的 “complete/approved/settled” 字样一律不能绕过这条边界。
-6. **商户侧协调 = 一个幂等入口**。签名 webhook 与返回页查询是两条独立信号，先后不定、可能只到一条；商户后端用同一个幂等订单更新/履约函数承接，每个业务效果按 `event_id` / 业务键恰好应用一次。
-7. **test/live 全链路隔离**，限流与 origin 检查只是减滥用手段，不替代能力验证。
+### 5.2 协调原则
+
+1. **凭证集中解析，principal 全程传播。** 只有 credential service 接触原始凭证材料。下游只认 `RequestPrincipal`，并在属主服务重复归属校验（§3.4）。
+2. **状态与 outbox 同事务提交。** 每个外部可见状态迁移在同一事务追加版本化 `outbox_event`。队列只搬运工作，不是事实源。消费者完成幂等效果后才确认。
+3. **统一守卫式迁移函数。** 同步响应与验证过的通道回调走同一函数：校验当前状态、操作类型、金额与通道证据后写入 attempt/Transaction 新状态。乱序与重复由 provider-event 去重 + 聚合版本 CAS 兜底，状态不可回退。
+4. **提交前持久化，超时进对账。** 先认领 session 级 submission key、写 attempt 与稳定通道操作键，再调 processor。通道超时后操作进入 unknown，session 锁定禁止盲目重提，对账 worker 用原引用/幂等键查询。**结果未明时禁止换通道重试**（可能双重授权）。
+5. **账务只走一条边界。** 授权证据使 Transaction 进 `PAID`；请款成功进 `CAPTURED` 并发幂等清分命令；清分一次算出余额变动与不可变分录，商户净额进 `pending`；通道注资是上游 `SETTLEMENT` 动账，**不**置 `SETTLED`；只有下游商户结算进程把 `CAPTURED` 置 `SETTLED`、资金 `pending` → `available`（[ADR 0003](adr/0003-transaction-status-model.md)、[ADR 0005](adr/0005-ledger-invariants.md)）。
+6. **商户侧一个幂等入口。** webhook 与返回页是两条独立信号，先后不定、可能只到一条；商户用同一幂等函数承接，每个业务效果恰好一次。
+7. **test/live 全链路隔离。** 数据库、队列、通道账户、签名密钥、公开域名全部隔离。限流与 origin 检查不替代能力验证。
 
 ## 6. 整体时序图
 
 ### 6.1 纯授权（无 3DS 持卡人认证）
 
-以 `capture_mode: "manual"` 为例（只授权、请款另走管理 API）。`automatic` 时平台在授权同一环节发起请款，结果直接是 `captured`，后续清分入账路径相同。
+以 `capture_mode: "manual"` 为例（只支付授权）。`automatic` 时平台在授权同一环节发起请款，结果直接 `captured`，后续清分路径相同。
 
 ```mermaid
 sequenceDiagram
@@ -453,7 +275,7 @@ sequenceDiagram
     Backend->>Platform: POST /v1/checkout-sessions（Bearer sk_ / OAuth + 幂等键）
     Platform-->>Backend: session id + client_secret
     Backend-->>Browser: 公钥 pk_ + client_secret
-    Browser->>Platform: createCheckout + mount（能力凭证校验：商户/环境/origin/有效期）
+    Browser->>Platform: createCheckout + mount（能力校验：商户/环境/origin/有效期）
     Platform-->>Browser: 可用支付方式与安全字段（跨域 iframe）
 
     Buyer->>Browser: 填写并点击 Pay
@@ -465,7 +287,7 @@ sequenceDiagram
 
     alt 授权成功（manual capture）
         Platform-->>Browser: authorized（capture: "manual"）
-        Platform-->>Backend: 签名授权 webhook（event_id + 时间戳 + HMAC）
+        Platform-->>Backend: 签名授权 webhook
     else 自动请款
         Platform->>Processor: 请款（同一 attempt）
         Processor-->>Platform: 请款结果
@@ -492,9 +314,11 @@ sequenceDiagram
     Note over Backend: webhook 与返回页共用同一幂等订单更新函数<br/>PAID → CAPTURED → SETTLED 只走清分/结算边界
 ```
 
+浏览器应答与签名 webhook 互相独立。两者谁先到都可以。浏览器可能消失。商户后端必须用同一个幂等路径应用业务效果。
+
 ### 6.2 认证 + 授权（3DS 持卡人认证 + 支付授权）
 
-商户代码不变，仍是同一个 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt、呈现发卡行控制的认证体验、完成后**恢复同一笔 attempt** 继续授权。
+商户代码不变，仍是 `checkout.confirm()`。3DS 是 confirm 编排的一个 **action**：暂停同一 attempt，呈现发卡行控制的认证体验，完成后**恢复同一 attempt** 继续支付授权。
 
 ```mermaid
 sequenceDiagram
@@ -504,22 +328,22 @@ sequenceDiagram
     participant Platform as 支付平台
     participant DS as 收单 + 3DS（发卡行侧）
 
-    Browser->>Platform: confirm()（同一会话能力凭证 + 提交键）
+    Browser->>Platform: confirm()（会话能力凭证 + 提交键）
     Platform->>Platform: 持久化 attempt 与关联（Transaction 保持 PAYING）
     Platform->>DS: 提交卡支付
 
     alt 免打扰（frictionless）
-        DS-->>Platform: 认证结果（无需买家交互）
+        DS-->>Platform: 认证结果（无买家交互）
     else 内嵌 / 弹窗挑战
         DS-->>Platform: 需要挑战
-        Platform-->>Browser: actionstart（type: "three_ds"）+ 呈现发卡行控制的挑战
+        Platform-->>Browser: actionstart（type: "three_ds"）+ 发卡行控制的挑战
         Buyer->>Browser: 完成 / 取消 / 放弃挑战
         Browser->>DS: 挑战交互（原始负载不出 iframe）
         DS-->>Platform: 认证结果
-        Platform-->>Browser: actionend（outcome: completed/canceled/failed）
+        Platform-->>Browser: actionend（completed / canceled / failed）
     else 整页跳转 / 银行 App 跳转
         DS-->>Platform: 需要跳转
-        Platform-->>Browser: 跳转去认证（confirm Promise 从此不可依赖）
+        Platform-->>Browser: 跳转去认证（此后不依赖 confirm Promise）
         Buyer->>DS: 完成 / 取消 / 放弃认证
         DS-->>Platform: 认证 + 支付结果（原 JS 上下文已销毁）
     end
@@ -534,7 +358,7 @@ sequenceDiagram
             Platform-->>Browser: authorized / captured（上下文存活时）
             Platform-->>Backend: 签名 webhook
         else 认证通过但授权被拒
-            Platform-->>Browser: failed（payment_declined，绝不报 3DS 成功当支付成功）
+            Platform-->>Browser: failed（payment_declined。不报 3DS 成功当支付成功）
             Platform-->>Backend: 签名失败 webhook
         end
     else 认证失败 / 明确取消
@@ -556,7 +380,7 @@ sequenceDiagram
     Note over Platform,Backend: 跳转/关页/挂起导致 Promise 永不 resolve 是常态<br/>收口只能靠签名 webhook + 认证过的状态查询
 ```
 
-### 状态机对照（两条链路共用）
+### 6.3 状态机对照（两条链路共用）
 
 ```text
 编排/浏览器:  load → mount → ready → confirm → action(3DS/redirect) → 结果
@@ -566,12 +390,30 @@ Transaction:  PAYING → PAID → CAPTURED → SETTLED        （ADR 0003）
 钱包:         pending → available（仅在下游 SETTLED 之后）（ADR 0005）
 ```
 
-- `AUTHENTICATING` 是编排层状态，**不是**新增的 `Transaction.status`；认证等待期间平台交易枚举仍是 `PAYING`。
-- 挑战渲染、挑战完成、浏览器回跳、持卡人认证通过、通道受理请求——这些都**不映射**为支付成功。
-- 支付授权成功（`PAID`）也不等于商户可发货：是否以授权为发货依据是商户的显式策略；更不等于入账结算（`SETTLED`）。
+- `AUTHENTICATING` 是编排层状态，**不是**新增的 `Transaction.status`。认证等待期间交易枚举保持 `PAYING`。
+- 这些都**不映射**为支付成功：挑战渲染、挑战完成、浏览器回跳、持卡人认证通过、通道受理请求。
+- 支付授权成功（`PAID`）是否足够发货是商户的显式策略。更不等于入账结算（`SETTLED`）。
 
-## 7. 相关材料
+## 7. 验收要点
 
+- 商户身份只能从凭证推导。body 自报 `merchant_id` 无效。
+- 浏览器只用公钥 + 会话能力凭证即可挂载。两者解析到同一商户与环境。
+- 浏览器无法改动金额、币种、商户、capture 策略。
+- 原始支付数据不出现在商户可见状态、事件与日志。
+- 重复确认不产生平行逻辑 attempt。购物车变更产生替换 session 而非改金额。
+- 跳转/页面丢失与异步结果可经状态查询与 webhook 恢复。
+- 会话引用替换不能泄露他人订单（含同商户下他人订单）。
+- 重复/乱序的 webhook 与返回页处理，业务效果各恰好一次。
+- 会话创建、幂等响应与浏览器能力原子提交。确认先持久化 attempt 与通道操作键再调 processor。
+- 提交后超时锁定盲目重试并路由对账。同步响应与验证回调共用守卫式迁移函数。
+- 支付状态变更与 outbox 同事务；webhook 投递失败不改变支付状态。
+- `PAID`、`CAPTURED`、上游注资与下游 `SETTLED` 相互区分；只有账务边界移动余额。
+- 未登记的返回地址与伪造的 frame 消息被拒绝。
+- 浏览器完成态不能直接记账、不能把资金移到 `available`、不能在无服务端证据时触发发货。
+
+## 8. 相关材料
+
+- [Payment Element 商户接入指南](payment-element-merchant-integration-guide.md)（商户视角、新手向）
 - [Payment Element SDK design](payment-element-design.md)（英文契约原文）
 - [Payment Element 3DS design](payment-element-3ds-design.md)（3DS 扩展原文）
 - [Stripe Payment Element gap research](stripe-payment-element-gap-research.md)
