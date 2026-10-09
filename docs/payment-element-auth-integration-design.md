@@ -169,7 +169,7 @@ Transaction 与钱包两行的权威语义（吸收自 ADR 0003 / ADR 0005）：
 
 | 层 | 职责 |
 | --- | --- |
-| PaymentElement SDK（浏览器） | 呈现发卡行挑战（内嵌 / 弹窗）、执行 confirm 响应里的跳转指令、回传 action 结果、发 `actionstart` / `actionend` |
+| PaymentElement SDK（浏览器） | 呈现发卡行挑战（内嵌 / 弹窗）、执行 confirm 响应里的跳转指令（导航整页，权限见 §2.3）、回传 action 结果、发 `actionstart` / `actionend` |
 | 平台后端（支付编排器 + processor adapter） | 判定是否需要 3DS、与 3DS 体系交换认证与挑战报文、保存 action 引用与续接状态、认证后恢复同一 attempt |
 
 EMV 3DS 报文、发卡行/目录服务器数据、认证值（CAVV/AAV）、设备数据只存在于 adapter 与通道之间，**不进**商户 API、商户回调和日志。
@@ -256,6 +256,19 @@ sequenceDiagram
 | 整页跳转 / 银行 App | 跳转到发卡行或处理器目的地 | 跳转由 `confirm()` 的响应触发：响应携带发卡行验证 URL，SDK 在浏览器端执行跳转。返回目标是登记过的商户 URL，只带不透明会话引用 |
 
 confirm() 的响应有两种形态：**直接结果**（`authorized` / `captured` / `processing` / `failed`）和**动作指令**。内嵌挑战是指令的一种，由 SDK 自行呈现；跳转指令（`{ type: "redirect", url }`）携带发卡行验证 URL，由 SDK 在浏览器端执行跳转到发卡行。商户代码不接触发卡行 URL，也不接触挑战负载。
+
+**导航权限：谁能跳转、能跳到哪**
+
+“跳转”只能是**整页导航**。“在 div 里跳转”不存在——整页跳转替换的是整个顶层页面（地址栏都会变），组件容器随页面一起被替换。div 里能做的只是**内嵌呈现**：把发卡行验证框加载进容器内的 iframe / 模态。发卡行页面常用 `X-Frame-Options` 或 CSP `frame-ancestors` 禁止被嵌入，所以内嵌不可用时才退到弹窗或整页跳转。
+
+| 谁 | 能做什么 | 怎么限制 |
+| --- | --- | --- |
+| 受控字段 iframe（跨域） | 只在自己框内呈现挑战；**无权导航主页面** | sandbox 不含 `allow-top-navigation`；协议消息里没有导航指令 |
+| PaymentElement SDK（运行在商户页上下文） | 执行跳转指令：`window.location.href = redirectUrl`，导航**整个顶层页面** | URL 只来自 confirm 响应，目的域必须是登记过的 3DS 域；跳转前先发 `actionstart`（防开放跳转） |
+| 弹窗 | `window.open` 新窗口；主页面和 div 都不动 | 必须在买家点 Pay 的手势链内调用，否则被拦 → `popup_blocked` |
+| 内嵌挑战 | 验证框出现在组件容器内，不离开页面 | 挑战 frame 走 §3.4 的消息协议 |
+
+商户主页面被整页跳转是**预期行为**，不是缺陷：跳转前 `actionstart`（type: `"redirect"`）先触发，给商户锁界面的机会；跳转后原页面销毁，收口靠 §3.3 与 §4.2。若商户不接受整页导航，应在配置里只启用内嵌 / 弹窗模式（平台按发卡行支持能力降级）。
 
 ### 2.4 action 事件契约
 
@@ -567,7 +580,7 @@ function CardFields({ instanceId }: { instanceId: string }) {
 
 三个要点：React 绑定是薄封装，不重写支付逻辑；`destroy()` 与组件卸载对齐；Strict Mode 的重复 effect 必须幂等（同 `instanceId` 复用同一批 frame，绝不产生两套）。
 
-配套要求：对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为；frame 地址由平台配置，不可被商户替换。不在缺乏方法级浏览器测试的情况下规定外层 iframe、sandbox flags 或跨源隔离。
+配套要求：**导航权限是硬性设计**——受控字段 iframe 不得拥有无条件顶层导航权（sandbox 不含 `allow-top-navigation`，见 §2.3）；整页跳转只由商户页上下文的 SDK 执行，且目标域受控。对外发布必需的 `script-src`、`frame-src`、`connect-src`、钱包 Permissions Policy 与返回导航行为；frame 地址由平台配置，不可被商户替换。其余 sandbox flags 与跨源隔离细节，不在缺乏方法级浏览器测试的情况下规定。
 
 ## 4. 服务端认证模型（服务间认证）
 
