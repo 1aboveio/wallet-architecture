@@ -17,7 +17,7 @@
 | 服务端如何做服务间认证 | §4 |
 | 提供什么包 / SDK，商户如何接入 | §5 |
 
-约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。
+约定与决策速查在附录：[附录 A 术语约定](#附录-a-术语约定)、[附录 B 决策总览](#附录-b-决策总览)。实现清单在[附录 C 关键接口清单](#附录-c-关键接口清单)。
 ## 1. 整体时序与状态机
 
 先看两条端到端链路。两图中 3DS 流程**折叠为一步**，只省略图内细节。3DS 由 PaymentElement 自己实现，实现分工与分支见 §2。后面的章节解释图里的其他机制。
@@ -859,6 +859,54 @@ load -> create checkout -> mount -> ready
 | 服务端如何认证 | 直连商户用 Bearer 私密钥 `sk_test_` / `sk_live_`；多商户应用用 OAuth 受限 token | 密钥永不进浏览器；商户身份只能从凭证推导，body 自报 `merchant_id` 一律无效 |
 | 用什么包接入 | 托管运行时 + 框架无关 TypeScript SDK（npm 细加载器）+ 薄 React 绑定 + 可选服务端 SDK | 支付行为只实现一次；敏感采集留在受控支付域；补丁更新不依赖商户发版 |
 | 时序 | 见 §1（3DS 详细流程见 §2）：纯授权一条链路；认证 + 授权在同一 payment attempt 内以 action 暂停/恢复；两者都靠签名 webhook + 受认证查询收口 | 3DS 跳转会销毁 JS 上下文；`confirm()` 的 Promise 不可作为正确性依赖 |
+
+## 附录 C. 关键接口清单
+
+按实现方分组的最小接口面。平台/SDK 实现者做 C.1–C.3；商户侧做 C.4。表内“位置”指本文或商户指南的章节，契约细节以对应章节为准。
+
+### C.1 公共 REST API（平台实现）
+
+| 接口 | 方法与路径 | 用途 | 关键约束（位置） |
+| --- | --- | --- | --- |
+| 创建支付会话 | `POST /v1/checkout-sessions` | 冻结金额/币种/订单，返回 `client_secret` | 服务端认证、幂等键、货币快照不可变（§4.1、§5.3） |
+| 查询会话 | `GET /v1/checkout-sessions/{id}` | 权威状态与关联支付 | 归属校验；永不返回 `client_secret`（§3.3） |
+| 作废会话 | `POST /v1/checkout-sessions/{id}/expire` | 停止新 attempt | 已提交的 attempt 继续跟踪（§5.3） |
+| 查询支付 | `GET /v1/payments/{id}` | 权威的授权 / 请款状态 | 终态不回退（§5.3） |
+| 请款 / 取消 / 退款 | `POST /v1/payments/{id}/capture` 等 | 手工请款、void、退款（相邻管理 API） | 归属校验、持久化幂等键；退款累计 ≤ 原请款（§5.3） |
+
+### C.2 浏览器 SDK 表面（`@walletpay/checkout-js` / `@walletpay/react`）
+
+| API | 说明 | 关键约束（位置） |
+| --- | --- | --- |
+| `loadWalletPay({ publicKey })` | 加载托管运行时 | 公钥只选配置，不授权支付（§3.1） |
+| `createCheckout({ clientSecret })` | 会话级编排对象 | 校验公钥/凭证同商户同环境（§3.1） |
+| `createPaymentElement(options)` + `mount(el)` | 挂载多支付方式 UI | 容器内创建字段 iframe（§3.4） |
+| `checkout.confirm({ returnUrl })` | 确认并编排 action | 提交键防重；跳转指令自动执行；结果见 `ConfirmResult`（§2.3、§5.2） |
+| `checkout.on("actionstart" / "actionend")` | action 生命周期 | 语义见 §2.4 |
+| `element.on("ready" / "change" / "focus" / "blur" / "loaderror")` | UI 状态信号 | 刻意没有 `paymentSucceeded`（§5.4） |
+| `unmount()` / `destroy()` | 清理 frame、监听、在途请求 | 陈旧消息一律拒绝（§3.4 ⑧） |
+| React 绑定（provider + hook） | 同一核心的薄封装 | Strict Mode 幂等、卸载即 destroy（§3.4 ⑨） |
+
+### C.3 frame 消息协议（§3.4）
+
+| 消息 | 方向 | 用途 |
+| --- | --- | --- |
+| `field.ready` / `field.change` | frame → 父页 | 完整性与校验码（只有状态，无卡号值） |
+| `field.focus` / `field.blur` | frame → 父页 | 焦点状态 |
+| `resize` | frame → 父页 | 有界高度（§3.4 ⑦） |
+| `collect` | 父页 → frame | confirm 时取 token（§3.4 ⑥） |
+
+配套硬约束：接收五层校验（§3.4 ⑤）、发送精确 `targetOrigin`（§3.4 ④）、sandbox 不含 `allow-top-navigation`（§2.3 样例 4）。
+
+### C.4 商户侧要实现的接口（对应商户接入指南）
+
+| 实现 | 用途 | 位置 |
+| --- | --- | --- |
+| `POST /api/checkout`（服务端） | 创建会话，下发公钥 + `client_secret` | 指南 §3 |
+| 前端集成 | `loadWalletPay` → `createCheckout` → `mount` → `confirm` | 指南 §4 |
+| `GET /api/checkout/result`（服务端） | 返回页查权威状态，订单归属校验 | 指南 §5 |
+| `POST /api/walletpay-webhook`（服务端） | 验签 → 落库 → 应答 → 幂等处理 | 指南 §6 |
+| （可选）`actionstart` / `actionend` 处理 | 3DS / 跳转期间的 UX 协调 | 指南 §4.4 |
 
 ## 延伸阅读（可选）
 
