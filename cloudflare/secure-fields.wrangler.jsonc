@@ -1,0 +1,15 @@
+{
+  "name": "wallet-secure-fields-demo",
+  "main": "./secure-fields-worker.mjs",
+  "compatibility_date": "2026-09-29",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist/secure-fields",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "vars": {
+    "MERCHANT_ORIGIN": "https://wallet-payment-element-demo.jonas-gu.workers.dev"
+  }
+}
