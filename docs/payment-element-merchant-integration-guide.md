@@ -65,7 +65,7 @@ Webhook 和查询可以任意先后到达。浏览器跳转或关闭后，SDK �
 | B. Payment Element | 将一个完整支付组件挂载到你的页面 | 你负责普通 Pay；组件负责方式专用按钮 | 支付区域布局和受限主题；周边页面由你设计 |
 | C. Hosted Fields | 分别指定卡号、有效期、CVV 字段容器 | 你 | 字段排列、周边标签、错误位置和受限输入样式 |
 
-A 最少前端代码；B 适合保留商城结账体验并支持多支付方式；C 适合深度定制卡表单，首期仅卡支付。三种都是拟定产品方案，以下先讲共享后端，再分别给接入代码。
+A 最少前端代码；B 保留商城结账体验并预留多支付方式；首期按已发布能力矩阵开放；C 适合深度定制卡表单，首期仅卡支付。三种都是拟定产品方案，以下先讲共享后端，再分别给接入代码。
 
 一个 Payment Element 不代表只有一个 iframe。B 对你是一个组件，内部可包含多个安全字段 frame；C 是多个字段容器，各由 SDK 挂载安全 iframe。你不需要自己创建或访问这些 frame。
 
@@ -125,6 +125,7 @@ Content-Type: application/json
   "capture_mode": "automatic",
   "return_url": "https://shop.example/payments/return",
   "locale": "zh-CN",
+  "navigation_policy": "allow_redirect",
   "expires_in_seconds": 1800
 }
 ```
@@ -139,6 +140,7 @@ Content-Type: application/json
 | `capture_mode` | `automatic` 自动授权并请款；`manual` 仅先授权 |
 | `return_url` | 已登记的买家返回地址，由 SDK 自动使用 |
 | `locale` | 可选，组件语言 |
+| `navigation_policy` | allow_redirect（默认）或 stay_on_page；后者不绕过必要认证，Hosted 只支持前者 |
 | `expires_in_seconds` | 可选，新付款入口的有效期；示例为 30 分钟，正式范围待发布 |
 
 支付授权表示银行批准并保留金额；请款表示向通道确认收取金额；结算是后续资金进入你的可提现余额。三者不是同一时点。默认示例使用自动请款，手工模式的后续操作见 §8。
@@ -157,7 +159,7 @@ Content-Type: application/json
 }
 ```
 
-此时平台已关联 Order 和 Session，**尚未发起付款，也没有 Transaction**。`order_id` 是平台内部支付订单引用，不替代你的购物订单。
+创建 Session **不新建 Transaction**；若同 Order 的旧 Session 已有交易，其支付限制仍然生效。`order_id` 是平台内部支付订单引用，不替代你的购物订单。
 
 ### 3.3 三种方案共享的后端集成示例
 
@@ -192,6 +194,7 @@ app.post("/api/checkout", async (req, res) => {
       capture_mode: "automatic",
       return_url: "https://shop.example/payments/return",
       locale: "zh-CN",
+      navigation_policy: "allow_redirect",
       expires_in_seconds: 1800,
     },
     {
@@ -228,9 +231,17 @@ app.post("/api/checkout", async (req, res) => {
 
 普通会话查询不会返回 `client_secret`；创建请求在规定保留窗口内的幂等重放会返回原响应。你不能把“相同订单版本永远复用同一键”作为过期会话重建策略。
 
+### 3.5 首期能力与必需数据
+
+三种模式首期共同验收范围是在线一次性卡支付。平台返回 eligible_methods、required_fields 与 capture／导航能力；商户配置只能收紧，不能开启未开通的方法。钱包、保存卡、off-session 和订阅需要后续专门契约。
+
+SDK 默认采集通道要求的姓名／账单地址／email。当前草案版本为 2026-10-14.preview，正式接入时固定 SDK／API 与 webhook 版本。B 在支付区域内采集；C 的示例提供 BillingDetailsElement 或 billingDetails 容器。自有表单使用 checkout.updateBillingDetails(value) 更新受限非卡数据，金额仍由后端快照决定；不要把 PAN／CVC 放入这些字段。
+
+allow_redirect 允许已验证的整页回流；stay_on_page 只使用可在当前页面完成的能力，不能关闭必要 3DS。首期承诺的浏览器版本随 SDK 发布清单，App 内置浏览器／WebView 未通过矩阵验收前不保证支持；必要时用平台恢复入口在系统浏览器继续原付款。
+
 ## 4. 第二步：按方案接入前端
 
-本章按 A／B／C 展示 JavaScript 和 React。三种都使用第 3 章的后端创建接口与第 5、6 章的结果处理。共享请求、恢复控制器及 React 表单在 §7.2；你可先读选定方案，再查看共享代码。SDK 尚未发布，以下是拟定接线契约。
+本章按 A／B／C 展示 JavaScript 和 React。三种都使用第 3 章的后端创建接口与第 5、6 章的结果处理。共享状态契约、请求与 React 表单在 §7；你可先读选定方案，再查看共享代码。SDK 尚未发布，以下是拟定接线契约。
 
 ### 4.1 A：整页托管
 
@@ -323,11 +334,12 @@ export function HostedPay({ orderReference, csrfToken }) {
 ```html
 <section id="checkout-root">
 <form>
+<p>付款金额：<span data-role="total"></span></p>
 <div id="payment-element"></div>
 
 <button type="submit" data-action="pay" disabled>Pay</button>
 <button type="button" data-action="refresh" disabled>刷新结果</button>
-<button type="button" data-action="retry-same" disabled>恢复原提交</button>
+<button type="button" data-action="resume" disabled>继续当前付款</button>
 <button type="button" data-action="replace-session" disabled>重新进入付款</button>
 <p data-role="message" aria-live="polite"></p>
 </form>
@@ -348,8 +360,8 @@ import { loadWalletPay } from "@walletpay/checkout-js";
    const surface = checkout.createPaymentElement({
      layout: "accordion", appearance: { theme: "light" },
    });
-   const dispose = bindCheckout({ checkout, surface, root,
-     sessionId: setup.sessionId, onReplaceSession: () => onReplaceSession(setup.sessionId) });
+   const dispose = bindCheckout({ checkout, root,
+     onReplaceSession: () => onReplaceSession(setup.sessionId) });
    surface.mount(root.querySelector("#payment-element"));
    signal?.addEventListener("abort", dispose, { once: true });
    return () => { signal?.removeEventListener("abort", dispose); dispose(); };
@@ -391,13 +403,15 @@ Provider／Element 自动创建、挂载与销毁 JS 核心。Session ID 或公�
 ```html
 <section id="checkout-root">
 <form>
+<p>付款金额：<span data-role="total"></span></p>
 <div>卡号</div><div id="card-number"></div>
 <div>有效期</div><div id="card-expiry"></div>
 <div>安全码</div><div id="card-cvc"></div>
+<div id="billing-details"></div>
 
 <button type="submit" data-action="pay" disabled>Pay</button>
 <button type="button" data-action="refresh" disabled>刷新结果</button>
-<button type="button" data-action="retry-same" disabled>恢复原提交</button>
+<button type="button" data-action="resume" disabled>继续当前付款</button>
 <button type="button" data-action="replace-session" disabled>重新进入付款</button>
 <p data-role="message" aria-live="polite"></p>
 </form>
@@ -419,10 +433,11 @@ import { loadWalletPay } from "@walletpay/checkout-js";
      appearance: { theme: "light" },
      accessibility: { labels: { number: "卡号", expiry: "有效期", cvc: "安全码" } },
    });
-   const dispose = bindCheckout({ checkout, surface, root,
-     sessionId: setup.sessionId, onReplaceSession: () => onReplaceSession(setup.sessionId) });
+   const dispose = bindCheckout({ checkout, root,
+     onReplaceSession: () => onReplaceSession(setup.sessionId) });
    surface.mount({ number: root.querySelector("#card-number"),
-     expiry: root.querySelector("#card-expiry"), cvc: root.querySelector("#card-cvc") });
+     expiry: root.querySelector("#card-expiry"), cvc: root.querySelector("#card-cvc"),
+     billingDetails: root.querySelector("#billing-details") });
    signal?.addEventListener("abort", dispose, { once: true });
    return () => { signal?.removeEventListener("abort", dispose); dispose(); };
  }
@@ -430,12 +445,12 @@ import { loadWalletPay } from "@walletpay/checkout-js";
 
 #### 4.3.2 React
 
-setup 对应 fields Session。CardFields 是统一字段组，三个 Field 组件是挂载点；缺少或重复字段是配置错误，全部初始化后组才 ready。
+setup 对应 fields Session。CardFields 是统一卡字段组；BillingDetailsElement 收集另行要求的姓名／账单数据。缺少或重复必需字段是配置错误，全部必要数据有效才 canConfirm。
 
 ```jsx
 import {
   WalletPayProvider, CheckoutProvider, CardFields,
-  CardNumberField, CardExpiryField, CardCvcField,
+  CardNumberField, CardExpiryField, CardCvcField, BillingDetailsElement,
 } from "@walletpay/react";
 import { CheckoutForm } from "./CheckoutForm.jsx";
 
@@ -458,6 +473,7 @@ export function CustomCardPay({ setup, onReplaceSession }) {
             </div>
           </div>
         </CardFields>
+        <BillingDetailsElement />
       </CheckoutForm>
     </CheckoutProvider>
   </WalletPayProvider>;
@@ -505,7 +521,7 @@ Worldpay 将 challenge URL 和 JWT 返回给支付平台后端。SDK 加载支�
 1. **启动挑战**：支付平台 SDK／托管页面在买家浏览器中提交 JWT 表单，打开银行验证界面。这部分由支付平台实现。
 2. **挑战结束回流**：Worldpay／银行挑战流程自动驱动买家浏览器，向平台预先设置的 `challenge.returnUrl` POST。商户不实现这次提交，SDK 也不需要手工模拟它。[W1]
 
-支付平台后端接收回流，查证认证结果并继续付款；平台提供的回流页面脚本通知 SDK 恢复界面，SDK 查询支付状态。你只需按 §5、§6 查询订单结果和接收平台签名 webhook。
+支付平台后端接收回流，查证认证结果并继续付款；平台提供的回流页面脚本通知 SDK 恢复界面，SDK 查询支付状态。SDK 自动管理交互与恢复；你只需按 §5、§6 查询订单结果和接收平台签名 webhook。
 
 #### 平台中转等待页与返回商城
 
@@ -575,7 +591,7 @@ sequenceDiagram
 
 onReplaceSession 是父页面提供的回调：携带原 Session 引用调用你自己的后端，后端查证并停止旧入口、认领新创建代次，再由父页面销毁旧上下文并传入新 setup。未知结果不直接换入口再扣款；新确认仍受平台 Order 级限制。
 
-JS 调用 mountCheckout 时传入路由 AbortSignal；异步初始化晚到时不挂回旧路由。React 按 Session ID／公钥替换 Provider，绑定自动清理所属字段；商户的恢复 flow 在 effect 中创建和清理。
+JS 调用 mountCheckout 时传入路由 AbortSignal；异步初始化晚到时不挂回旧路由。React 按 Session ID／公钥替换 Provider，绑定自动清理所属字段；SDK 恢复控制器由 Provider 管理，商户仅订阅状态与绑定按钮。
 
 unmount 只移除输入呈现并清空敏感输入，允许有效实例重挂并重新 ready；destroy 幂等销毁整个实例，不可重挂。二者都不取消后台支付。
 
@@ -604,13 +620,13 @@ app.get("/api/checkout/result", async (req, res) => {
   await validatePlatformBinding(binding, session);
   // 使用 Order 汇总，验证相关交易的实际订单版本和金额。
   await applyVerifiedOrderPayment(binding, session.order_payment);
-  const status = await buildBuyerPaymentStatus(binding, session);
+  const status = await buildBuyerOrderResult(binding, session);
   res.set("Cache-Control", "no-store");
   res.json(status);
 });
 ```
 
-辅助函数由商户实现。buildBuyerPaymentStatus 按 §7.1 的结构返回；旧版本付款不自动满足新版本，nextAction 必须使用平台事实和履约政策保守推导。不存在与无权访问均用相同 404。
+辅助函数由商户实现。buildBuyerOrderResult 仅投影已验证的支付事实、实际版本金额和自己的履约状态，不计算 SDK 的付款资格。旧版本付款不能自动满足新版本。不存在与无权访问均用相同 404。
 
 ### 5.3 返回页示例
 
@@ -630,6 +646,8 @@ if (!sessionId) {
 
 接口未决时显示“处理中”，有限轮询或引导查看订单。无论等待多久，浏览器超时都不等于付款失败。
 
+结果接口返回 BuyerOrderResult：paymentStatus、transactionId、paidOrderVersion、paidAmount、capture、orderVersionMatches 和 fulfillmentStatus。paidOrderVersion／paidAmount 仅在已有授权／请款事实时存在；不匹配当前业务版本时由商户处理履约异常，不自动当成已付新订单。该结果用于订单展示，不含由商户推断的支付资格；结账按钮与恢复操作使用 SDK 状态。
+
 ## 6. 第四步：接收 webhook
 
 ### 6.1 Webhook 是后台通知
@@ -640,51 +658,27 @@ if (!sessionId) {
 
 ### 6.2 验签与持久化示例
 
-下面是拟定签名格式：`HMAC-SHA256(secret, timestamp + "." + rawBody)`。事件体包含签名覆盖的 `id`；若同时有 Event-Id 头，必须与体内 ID 一致。正式签名格式以发布契约为准。
+正式发布使用平台 Node SDK 的验签函数；下列仍为拟定接口。验签基于原始 body，支持签名密钥轮换、时间容差和事件 schema，不要求你自行解析 HMAC。
 
 ```ts
-import crypto from "node:crypto";
 import express from "express";
-
-// 该路由必须在会修改 body 的全局 JSON parser 之前注册。
-app.post(
-  "/api/walletpay-webhook",
+// 在全局 JSON parser 之前注册；应用已初始化 walletpay。
+app.post("/api/walletpay-webhook",
   express.raw({ type: "application/json", limit: "1mb" }),
   async (req, res) => {
-    const timestamp = req.get("WalletPay-Timestamp") ?? "";
-    const signature = req.get("WalletPay-Signature") ?? "";
-    if (!/^\d+$/.test(timestamp) || !/^v1=[0-9a-f]{64}$/.test(signature)) {
-      return res.status(400).end();
-    }
-    const seconds = Number(timestamp);
-    if (!Number.isSafeInteger(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) {
-      return res.status(400).end();
-    }
-    const rawBody = req.body;
-    if (!Buffer.isBuffer(rawBody)) return res.status(400).end();
-    const expected = crypto.createHmac(
-      "sha256", process.env.WALLETPAY_WEBHOOK_SECRET!,
-    ).update(`${timestamp}.`).update(rawBody).digest();
-    const received = Buffer.from(signature.slice(3), "hex");
-    if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
-      return res.status(400).end();
-    }
-
     let event;
-    try { event = parseAndValidateWalletPayEvent(rawBody); }
-    catch { return res.status(400).end(); }
-    const headerId = req.get("WalletPay-Event-Id");
-    if (headerId && headerId !== event.id) return res.status(400).end();
-
-    // 事务落库；事件 ID 唯一，worker 可扫描所有 pending inbox 记录。
-    // 失败则返回非 2xx，不能在事件未保存时应答成功。
-    await inbox.persistIfNew(event.id, event);
+    try {
+      event = walletpay.webhooks.constructEvent(req.body, req.headers,
+        webhookSigningSecrets, { toleranceSeconds: 300 });
+    } catch { return res.status(400).end(); }
+    await validateEventAccountAndEnvironment(event);
+    await inbox.persistIfNew(event.id, event); // 事务落库失败则非 2xx。
     res.status(200).end();
   },
 );
 ```
 
-这个示例覆盖格式检查、时间戳、原始 body 和长度检查。生产实现还需要按正式 SDK 处理密钥轮换、完整事件 schema 和可观测性。
+webhookSigningSecrets 从服务端配置读取当前和轮换中的端点密钥，不能放前端。SDK 只验证事件真实性；端点配置归属、业务订单与履约仍由你的后端检查。
 
 ### 6.3 后台订单处理
 
@@ -694,46 +688,92 @@ Worker 从持久 inbox 读取事件，验证订单关联与支付事实，调用
 
 两层去重都需要：事件 ID 防止重复消费同一事件；订单更新和履约效果的唯一约束防止不同事件、查询与 webhook 同时触发重复发货。
 
-乱序事件不能把已请款订单覆盖成处理中。失败事件要对应具体 Transaction，不能因旧失败尝试的迟到通知把已成功订单标为失败。事件格式尚待定稿，商户应用以权威状态和允许转换为准。
+乱序事件不能把已请款订单覆盖成处理中。失败事件要对应具体 Transaction，不能因旧失败尝试的迟到通知把已成功订单标为失败。事件 v1 使用 2026-10-14.preview 草案语义，正式发布前固定 schema 和版本；商户应用以权威状态和允许转换为准。
 
-## 7. 结果、异常与恢复代码
+### 6.4 投递、版本与排障
 
-### 7.1 如何决定下一步
+首期事件包括 transaction.updated、authorization.updated、capture.updated、refund.updated 和 Session 入口变化事件。信封包含 id、type、api_version、created_at、livemode、merchant_id 和 data；data 包含资源 ID、实际版本金额与资源修订。入口变化不等于付款失败，原始卡数据、secret 和认证值不进入事件。
 
-浏览器确认结果用于 UI；更新订单和履约仍依据你的后端查询／签名 webhook。captured 是已请款，不是已到可提现余额；authorized 的 manual／pending／failed 分别表示等待请款、请款未决、请款失败，三者都不能另付。
+自动投递采用有界退避，最多 72 小时；失败进入平台告警与待处理队列。保留的 30 天投递窗口内可请求人工重发，之后通过资源查询／对账恢复。重发保留 event.id 和 body，刷新投递时间戳与签名。不要依赖投递顺序或创建时间排序，修订不明时查询原资源。
 
-你的后端结果接口返回以下拟定投影，不直接复制通道原始状态：
+服务端错误与 SDK 错误带 Request-Id／requestId，可交给平台支持排障，不提交 secret 或原始回调。固定 API 和 webhook 版本，先在测试环境验证升级；字段或事件新增时保守记录与查询。查询、重发和资源支持入口是上线必需，自助投递面板可后续完善。
+
+## 7. SDK 状态、结果与共享接线
+
+**默认商户不再复制支付恢复状态机。** 平台计算付款执行资格；SDK 管理提交关联、原键重放、受限轮询、Action 续接、金额快照和迟到响应隔离。商户只订阅规范化 UI 状态并调用 confirm／refresh／resume，后端继续负责业务订单与履约。
+
+### 7.1 状态与公开方法
+
+以下是本平台拟定 v1 契约，不表示与 Stripe API 同名兼容。createCheckout 的 Promise 表示绑定与 bootstrap 完成；type=ready 只表示可以呈现会话，字段仍可能正在挂载。只有 canConfirm 才表示此刻可发起新的确认。
 
 ```ts
-type BuyerPaymentStatus = {
-  paymentStatus: "unpaid" | "processing" | "authorized" | "captured" | "failed";
-  sessionStatus: "open" | "expired" | "replaced" | "completed";
-  orderVersionMatches: boolean;
-  submissionResolved: boolean;
-  nextAction: "wait" | "retry_attempt" | "replace_session" | "stop";
-  transactionId?: string;
-  capture?: "manual" | "pending" | "failed";
+type PaymentStatus = "unpaid" | "processing" | "authorized" | "captured" | "failed";
+type BlockingReason = "fields_incomplete" | "request_in_progress" | "action_required"
+  | "payment_pending" | "outcome_unknown" | "already_authorized" | "already_captured"
+  | "session_expired" | "session_replaced" | "order_changed" | "configuration_error"
+  | "network_unavailable";
+type ErrorCode = "invalid_input" | "configuration_error" | "unsupported_method"
+  | "authentication_failed" | "payment_declined" | "action_canceled"
+  | "popup_blocked" | "network_unavailable" | "outcome_unknown"
+  | "session_expired" | "session_replaced" | "snapshot_mismatch"
+  | "idempotency_conflict" | "request_in_progress" | "internal_error";
+type PaymentError = {
+  code: ErrorCode; category: "integration" | "buyer" | "payment" | "network";
+  message: string; // 平台本地化且可安全展示，不含通道原始错误或秘密。
+  field?: "number" | "expiry" | "cvc" | "billingDetails";
+  requestId?: string;
 };
+type CheckoutReadyState = {
+  type: "ready";
+  snapshot: { id: string; orderVersion: number;
+    amount: { value: number; currency: string }; displayAmount: string };
+  payment: { status: PaymentStatus; transactionId?: string;
+    capture?: "manual" | "pending" | "failed" };
+  sessionStatus: "open" | "expired" | "replaced" | "completed";
+  canConfirm: boolean; blockingReason?: BlockingReason;
+  canRefresh: boolean; canResume: boolean; canReplaceSession: boolean;
+  message: string; error?: PaymentError;
+};
+type CheckoutState = { type: "loading" }
+  | { type: "error"; error: PaymentError } | CheckoutReadyState;
+type ConfirmResult = { type: "result"; state: CheckoutReadyState }
+  | { type: "error"; error: PaymentError };
+type CheckoutHook = { type: "loading" }
+  | { type: "error"; error: PaymentError }
+  | { type: "ready"; checkout: Checkout; state: CheckoutReadyState };
 ```
 
-submissionResolved 表示服务端已知提交没有未决动作，并不证明网络中没有迟到请求。首次未提交入口可以可用；提交后必须匹配本次已知 Transaction ID，不能用同 Order 旧失败或单次 unpaid 解锁。提交后断网，即使查询暂为 unpaid，也不能立即引导买家再付。后台确认可再付后，前端恢复 Pay；查询失败或超时保持等待。
+canConfirm 合并：字段完整、当前快照有效、Session 可提交、平台 Order 资格、没有本实例并行操作或待处理 Action。它是 UI 提示，不是支付权限；服务端每次重新验证。商户可因库存／条款等业务条件进一步禁用按钮，但不能自行把平台拒绝变成允许。
 
-| recovery | 商户下一步 |
+查询失败时 SDK 关闭新的确认，显示 network_unavailable；不会把查询失败写成支付 failed。bootstrap 配置错误进入 type=error；字段／付款错误放在 ready.error，SDK 根据最新证据重新计算 canConfirm。
+
+同实例 resume 恢复尚未受理的 prepared 提交时，可在买家手势下首次受理并创建其唯一 Transaction；已有 Transaction 时只续接它。
+
+canResume 只指向已关联的原提交／Action；canReplaceSession 表示当前可请求替换入口，不保证替换后可付款。authorized 或 captured 时禁止新 confirm；请款失败仍保留授权。SDK 将未知扩展错误码保守映射为 internal_error，保留 requestId，不因未知枚举放开按钮。
+
+| 方法／事件 | 契约 |
 | --- | --- |
-| correct_input | 修正未受理的输入校验问题 |
-| retry_same_operation | 用 SDK retryConfirmation 恢复原提交键，不调用新 confirm |
-| new_attempt | 查证 Order，nextAction 为 retry_attempt 才恢复 Pay |
-| new_session | 查证后重建 Session，并替换组件上下文 |
-| query_status | 刷新订单结果，不新扣款 |
-| contact_support | 停止提交，显示人可理解的提示 |
+| getState() | 同步返回最新不可变状态快照 |
+| subscribe(listener) | 订阅即回调当前状态，随后按实例内递增修订发布；返回幂等 unsubscribe |
+| confirm({ expectedSnapshotId, billingDetails? }) | 用户手势发起新确认；同步锁住本实例，复用未决逻辑提交，自动处理支持的 Action／短时网络恢复 |
+| refresh() | 只查证状态，不创建提交、授权或新 Transaction；重复刷新合并 |
+| resume() | 仅在 canResume 时继续已有提交／Action，不生成新的提交键或第二笔 Transaction；交互需用户手势 |
+| updateBillingDetails(value) | 只更新受限非卡数据并重新校验 canConfirm，不改变订单金额 |
+| actionstart／actionend | 可选的呈现提示，不能驱动业务状态或解除付款限制 |
 
-retryConfirmation 是拟定 SDK 恢复方法，只恢复当前实例已经保存的提交关联。凭证过期／页面丢失时转后端查询，不自行生成新的提交键重试。配置错误、输入错误、会话过期和付款结果未知不能都显示成“处理中”。
+confirm／refresh／resume 的业务、网络和能力错误以有类型结果返回，并发布到状态，不产生未处理 Promise rejection。程序参数类型错误在开发阶段抛错。destroy 后方法返回 configuration_error；旧请求不向已销毁实例发布状态。整页跳转仍可能让 Promise 不再返回。
 
-### 7.2 三种方案共用的商户辅助代码
+**金额显示合同：** SDK 从平台获得 snapshot.id、金额、币种、orderVersion 和本地化 displayAmount。B／C 的摘要与 Pay 附近显示该值，confirm 传入刚展示的 expectedSnapshotId；SDK 和服务端校验其与 Session 一致。它声明商户界面使用的平台快照，不是对浏览器 DOM 或买家真实看到什么的安全证明。实际收款金额始终来自服务端。
 
-以下文件由商户实现。JS 与 React 使用同一恢复状态逻辑；没有新增第二套支付流程。所有字段命名与内部设计一致。
+订单变化时旧快照标记 order_changed，禁止确认，商户后端创建新版本 Session；普通刷新不修改原 Session 金额。同一页面不能展示新购物车总额却继续确认旧 Session。Hosted 页由平台履行同一显示合同。
 
-#### 7.2.1 merchant-api.js：请求入口与订单结果
+自动恢复默认采用有限预算：网络重放最多 3 次、指数退避且遵守 Retry-After；轮询总预算 2 分钟、间隔最大 30 秒，页面不可见时暂停。预算耗尽只停止自动 UI 等待，不改变交易状态；暴露刷新／继续已有操作或订单支持入口。具体时限通过版本化 recovery_policy 下发，服务器可缩短但不能用其解除 Order 约束。
+
+原键恢复能力由 SDK 内部与 resume 统一承担；不另设默认 retryConfirmation API。字段 complete、提交键、unknown 匹配等规则不再要求商户复制。字段级错误仍可通过 Fields 事件自定义展示，不向商户暴露原始卡值。
+
+### 7.2 JavaScript：共享商户请求
+
+requestCheckoutSession 和 replaceCheckoutSession 是商户辅助函数。A 返回 sessionId／checkoutUrl，B／C 返回 sessionId／publicKey／clientSecret；SDK createCheckout 只绑定已有入口。
 
 ```javascript
 async function postCheckout(payload, csrfToken, signal) {
@@ -764,289 +804,149 @@ export async function queryOrderStatus(sessionId, signal) {
 }
 ```
 
-#### 7.2.2 checkout-flow.js：统一确认和恢复
+### 7.3 JavaScript：只绑定 SDK 状态与页面
 
-初次也查询 Order 状态。示例提供手动刷新结果，你可增加有界轮询；界面等待超时不标付款失败。
-
-```javascript
-export function createPaymentFlow({ checkout, queryStatus, onReplaceSession }) {
-  let input = { ready: false, complete: false, loadError: null };
-  let phase = "waiting", message = "正在检查付款状态";
-  let busy = false, action = false, uncertain = false, disposed = false;
-  let canReplay = false;
-  let expectedTransactionId;
-  const abort = new AbortController();
-  const listeners = new Set();
-  let snapshot;
-
-  function emit() {
-    if (disposed) return;
-    if (input.loadError && !uncertain && phase === "editing") {
-      phase = "blocked"; message = "支付组件加载失败，请刷新页面或联系商户";
-    }
-    snapshot = {
-      phase, message,
-      canSubmit: phase === "editing" && input.ready && input.complete &&
-        !input.loadError && !busy && !action,
-      canRefresh: !busy && !action && ["waiting", "retry_same"].includes(phase),
-      canRetrySame: !busy && !action && canReplay,
-      canReplace: !busy && phase === "replace_session",
-    };
-    listeners.forEach((notify) => notify(snapshot));
-  }
-
-  function applyStatus(status) {
-    // 此结构由商户后端验证并投影，不信任页面上的支付状态。
-    if (status.orderVersionMatches !== true) {
-      phase = "blocked"; canReplay = false;
-      message = "订单已变更，请查看订单或联系商户";
-    } else if (["authorized", "captured"].includes(status.paymentStatus)) {
-      phase = status.paymentStatus; canReplay = false; uncertain = false;
-      message = phase === "captured" ? "付款已确认" : "已授权，等待商户处理";
-    } else if (status.paymentStatus === "processing") {
-      phase = "waiting"; message = "付款处理中，请稍后刷新";
-    } else if (status.nextAction === "stop") {
-      phase = "blocked"; canReplay = false;
-      message = "请查看订单或联系商户处理";
-    } else if (uncertain && ["unpaid", "failed"].includes(status.paymentStatus) &&
-      status.sessionStatus === "open" &&
-      (!expectedTransactionId || status.transactionId !== expectedTransactionId)) {
-      phase = "waiting";
-      message = "原提交尚未确认，请恢复原提交或稍后刷新";
-    } else if (status.nextAction === "retry_attempt" &&
-      status.sessionStatus === "open" && status.submissionResolved === true &&
-      ["unpaid", "failed"].includes(status.paymentStatus)) {
-      phase = "editing"; canReplay = false; uncertain = false;
-      message = "可以重新付款，请检查支付信息";
-    } else if (status.nextAction === "replace_session" &&
-      status.submissionResolved === true && ["unpaid", "failed"].includes(status.paymentStatus)) {
-      phase = "replace_session"; canReplay = false; uncertain = false;
-      message = "付款入口已失效，请重新进入付款";
-    } else {
-      // unpaid 不等于旧确认请求一定未受理。
-      phase = "waiting";
-      message = "结果尚未确认，请刷新或恢复原提交";
-    }
-  }
-
-  async function readStatus() {
-    try {
-      const status = await queryStatus(abort.signal);
-      if (!disposed) applyStatus(status);
-    } catch {
-      if (!disposed) {
-        phase = "waiting";
-        message = "暂时无法确认结果，请稍后刷新";
-      }
-    }
-  }
-
-  async function acceptResult(result) {
-    if (result.transactionId) expectedTransactionId = result.transactionId;
-    if (result.status !== "failed") {
-      phase = "waiting";
-      canReplay = result.status === "processing" && result.reason === "unknown_outcome";
-      // authorized／captured／processing 都再经商户后端确认。
-      await readStatus();
-      return;
-    }
-    switch (result.error.recovery) {
-      case "correct_input":
-        uncertain = false; canReplay = false; phase = "editing";
-        message = "请修正支付信息后再试";
-        break;
-      case "retry_same_operation":
-        phase = "retry_same"; message = "请恢复原提交，勿再次付款";
-        break;
-      case "new_attempt":
-      case "new_session":
-        uncertain = false; canReplay = false;
-        phase = "waiting"; await readStatus();
-        break;
-      case "query_status":
-        canReplay = false;
-        phase = "waiting"; await readStatus();
-        break;
-      case "contact_support":
-      default:
-        phase = "blocked"; canReplay = false;
-        message = "付款暂不可用，请联系商户";
-    }
-  }
-
-  async function run(replay) {
-    if (disposed || busy || action) return;
-    if (replay ? !snapshot.canRetrySame : !snapshot.canSubmit) return;
-    if (!replay) expectedTransactionId = undefined;
-    busy = true; uncertain = true; canReplay = true;
-    phase = "submitting"; message = "正在确认付款"; emit();
-    try {
-      const result = await (replay ? checkout.retryConfirmation() : checkout.confirm());
-      if (!disposed) await acceptResult(result);
-    } catch {
-      if (!disposed) { phase = "waiting"; await readStatus(); }
-    } finally {
-      busy = false; emit();
-    }
-  }
-
-  const off = [
-    checkout.on("actionstart", () => { action = true; emit(); }),
-    checkout.on("actionend", () => { action = false; emit(); }),
-  ];
-  emit();
-  return {
-    getState: () => snapshot,
-    subscribe(notify) { listeners.add(notify); notify(snapshot); return () => listeners.delete(notify); },
-    setInput(value) {
-      input = value;
-      if (input.loadError && !uncertain && phase === "editing") {
-        phase = "blocked"; message = "支付组件加载失败，请刷新页面或联系商户";
-      }
-      emit();
-    },
-    submit: () => run(false),
-    retrySame: () => run(true),
-    async refresh() {
-      if (disposed || !snapshot.canRefresh) return;
-      busy = true; emit();
-      await readStatus(); busy = false; emit();
-    },
-    async replaceSession() {
-      if (disposed || !snapshot.canReplace) return;
-      busy = true; emit();
-      try { await onReplaceSession(); }
-      catch {
-        if (!disposed) { phase = "waiting"; message = "入口更新失败，请刷新订单状态"; }
-      } finally { busy = false; emit(); }
-    },
-    dispose() { disposed = true; abort.abort(); off.forEach((unsubscribe) => unsubscribe()); listeners.clear(); },
-  };
-}
-```
-
-#### 7.2.3 bind-checkout.js：JavaScript DOM 接线
+每个 B／C 表单包含 total、message 和 pay／refresh／resume／replace-session 挂载点。先 subscribe，再 mount；SDK 在 bootstrap、挂载和状态变化时重新计算资格。商户代码不实现原交易匹配或付款资格算法。
 
 ```javascript
-import { createPaymentFlow } from "./checkout-flow.js";
-import { queryOrderStatus } from "./merchant-api.js";
-
-export function bindCheckout({ checkout, surface, sessionId, root, onReplaceSession }) {
-  const flow = createPaymentFlow({ checkout, onReplaceSession,
-    queryStatus: (signal) => queryOrderStatus(sessionId, signal),
-  });
+// 商户 DOM 适配器。支付状态机、轮询与恢复由 SDK 实现。
+export function bindCheckout({ checkout, root, onReplaceSession }) {
   const form = root.querySelector("form");
   const pay = root.querySelector('[data-action="pay"]');
   const refresh = root.querySelector('[data-action="refresh"]');
-  const retry = root.querySelector('[data-action="retry-same"]');
+  const resume = root.querySelector('[data-action="resume"]');
   const replace = root.querySelector('[data-action="replace-session"]');
+  const total = root.querySelector('[data-role="total"]');
   const message = root.querySelector('[data-role="message"]');
-  const input = { ready: false, complete: false, loadError: null };
-  const off = [
-    surface.on("ready", (state) => {
-      input.ready = true; input.complete = state.complete; flow.setInput({ ...input });
-    }),
-    surface.on("change", (state) => { input.complete = state.complete; flow.setInput({ ...input }); }),
-    surface.on("loaderror", (error) => { input.loadError = error; flow.setInput({ ...input }); }),
-    flow.subscribe((state) => {
-      pay.disabled = !state.canSubmit; refresh.disabled = !state.canRefresh;
-      retry.disabled = !state.canRetrySame; replace.disabled = !state.canReplace;
-      message.textContent = state.message;
-    }),
-  ];
-  const submit = (event) => { event.preventDefault(); void flow.submit(); };
-  const onRefresh = () => { void flow.refresh(); };
-  const onRetry = () => { void flow.retrySame(); };
-  const onReplace = () => { void flow.replaceSession(); };
+  let renderedSnapshotId;
+  let disposed = false, replacing = false;
+
+  const unsubscribe = checkout.subscribe((state) => {
+    if (disposed) return;
+    const ready = state.type === "ready";
+    renderedSnapshotId = ready ? state.snapshot.id : undefined;
+    total.textContent = ready ? state.snapshot.displayAmount : "";
+    pay.disabled = !ready || !state.canConfirm || replacing;
+    refresh.disabled = !ready || !state.canRefresh || replacing;
+    resume.disabled = !ready || !state.canResume || replacing;
+    replace.disabled = !ready || !state.canReplaceSession || replacing;
+    message.textContent = ready ? state.message :
+      state.type === "error" ? state.error.message : "正在加载付款入口";
+  });
+
+  const submit = (event) => {
+    event.preventDefault();
+    if (!disposed && !replacing && renderedSnapshotId) {
+      void checkout.confirm({ expectedSnapshotId: renderedSnapshotId });
+    }
+  };
+  const onRefresh = () => { void checkout.refresh(); };
+  const onResume = () => { void checkout.resume(); };
+  const onReplace = async () => {
+    if (disposed || replacing || !checkout.getState().canReplaceSession) return;
+    replacing = true;
+    pay.disabled = refresh.disabled = resume.disabled = replace.disabled = true;
+    try { await onReplaceSession(); }
+    catch {
+      if (!disposed) {
+        message.textContent = "入口更新失败，请刷新结果后再试";
+      }
+    } finally {
+      replacing = false;
+      if (!disposed) await checkout.refresh();
+    }
+  };
   form.addEventListener("submit", submit);
   refresh.addEventListener("click", onRefresh);
-  retry.addEventListener("click", onRetry);
+  resume.addEventListener("click", onResume);
   replace.addEventListener("click", onReplace);
-  void flow.refresh(); // 初次也查询 Order 级状态，不只检查输入框。
   return () => {
+    if (disposed) return;
+    disposed = true;
+    unsubscribe();
     form.removeEventListener("submit", submit);
     refresh.removeEventListener("click", onRefresh);
-    retry.removeEventListener("click", onRetry);
+    resume.removeEventListener("click", onResume);
     replace.removeEventListener("click", onReplace);
-    off.forEach((unsubscribe) => unsubscribe()); flow.dispose();
-    checkout.destroy(); // 所属采集面一并销毁，不再重复 destroy surface。
+    checkout.destroy();
   };
 }
 ```
 
-#### 7.2.4 CheckoutForm.jsx：React 薄绑定
+### 7.4 React：判别联合与声明式状态
 
-useCheckout 提供稳定 checkout 对象和 ready、complete、loadError、fieldState。callback 引用更新不重建正在确认的 flow；Session identity 更新才替换整个上下文。
-
-父页面按当前模式重建入口，不能在重建后自动扣款：
+useCheckout 在 loading／error 阶段不暴露可用 Checkout；ready 阶段提供 checkout 和 state。ready 不等待子组件字段挂载，避免“先 ready 才渲染字段、先挂字段才 ready”的循环。Provider 管理 SDK 生命周期，普通回调引用更新不重建支付控制器。
 
 ```jsx
-import { replaceCheckoutSession } from "./merchant-api.js";
-
-// 父页面已有 orderReference、uiMode、csrfToken 和 setSetup。
-async function onReplaceSession(oldSessionId) {
-  const next = await replaceCheckoutSession(oldSessionId, orderReference, uiMode, csrfToken);
-  setSetup(next); // 新 Session ID 触发 Provider 替换，不自动调用 confirm。
-}
-```
-
-
-```jsx
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useCheckout } from "@walletpay/react";
-import { createPaymentFlow } from "./checkout-flow.js";
-import { queryOrderStatus } from "./merchant-api.js";
 
 export function CheckoutForm({ sessionId, onReplaceSession, children }) {
-  const { checkout, ready, complete, loadError, fieldState } = useCheckout();
-  const flowRef = useRef(null);
-  const replaceRef = useRef(onReplaceSession);
-  const [state, setState] = useState({ message: "正在检查付款状态" });
-  useEffect(() => { replaceRef.current = onReplaceSession; }, [onReplaceSession]);
-  useEffect(() => {
-    const flow = createPaymentFlow({ checkout,
-      queryStatus: (signal) => queryOrderStatus(sessionId, signal),
-      onReplaceSession: () => replaceRef.current(sessionId),
-    });
-    flowRef.current = flow;
-    const off = flow.subscribe(setState);
-    void flow.refresh();
-    return () => { off(); flow.dispose(); flowRef.current = null; };
-  }, [checkout, sessionId]);
-  useEffect(() => {
-    flowRef.current?.setInput({ ready, complete, loadError });
-  }, [checkout, sessionId, ready, complete, loadError]);
-  const errors = Object.entries(fieldState ?? {})
-    .filter(([, value]) => value.errorCode)
-    .map(([name]) => `${name} 字段需要检查`);
+  const result = useCheckout();
+  const [replacing, setReplacing] = useState(false);
+  const replacementLock = useRef(false);
+  const [localMessage, setLocalMessage] = useState("");
+  if (result.type === "loading") return <p>正在加载付款入口</p>;
+  if (result.type === "error") return <p role="alert">{result.error.message}</p>;
+  const { checkout, state } = result;
+
+  async function replaceSession() {
+    if (replacementLock.current || !state.canReplaceSession) return;
+    replacementLock.current = true;
+    setReplacing(true);
+    setLocalMessage("");
+    try { await onReplaceSession(sessionId); }
+    catch { setLocalMessage("入口更新失败，请刷新结果后再试"); }
+    finally { replacementLock.current = false; setReplacing(false); }
+  }
   return <form onSubmit={(event) => {
-    event.preventDefault(); void flowRef.current?.submit();
+    event.preventDefault();
+    if (!replacing && state.canConfirm) {
+      void checkout.confirm({ expectedSnapshotId: state.snapshot.id });
+    }
   }}>
+    <p>付款金额：{state.snapshot.displayAmount}</p>
     {children}
-    <p aria-live="polite">{errors.join("；")}</p>
-    <button type="submit" disabled={!state.canSubmit}>Pay</button>
-    <button type="button" disabled={!state.canRefresh}
-      onClick={() => void flowRef.current?.refresh()}>刷新结果</button>
-    <button type="button" disabled={!state.canRetrySame}
-      onClick={() => void flowRef.current?.retrySame()}>恢复原提交</button>
-    <button type="button" disabled={!state.canReplace}
-      onClick={() => void flowRef.current?.replaceSession()}>重新进入付款</button>
-    <p aria-live="polite">{state.message}</p>
+    <button type="submit" disabled={replacing || !state.canConfirm}>Pay</button>
+    <button type="button" disabled={replacing || !state.canRefresh}
+      onClick={() => void checkout.refresh()}>刷新结果</button>
+    {state.canResume && <button type="button" disabled={replacing}
+      onClick={() => void checkout.resume()}>继续当前付款</button>}
+    {state.canReplaceSession && <button type="button" disabled={replacing}
+      onClick={() => void replaceSession()}>重新进入付款</button>}
+    <p aria-live="polite">{localMessage || state.message}</p>
   </form>;
 }
 ```
 
-### 7.3 恢复场景检查
+父页面用 replaceCheckoutSession 取得新 setup，按 Session ID 替换 Provider；新入口不会自动 confirm。替换请求必须查证 Order 并停止旧入口，不能用新 key 绕过未决支付。
 
-| 情况 | 预期 |
-| --- | --- |
-| 初次挂载时旧会话已有付款 | 查 Order 汇总，先等待／展示结果，不直接开放新扣款 |
-| 处理中，后来确定失败且可再付 | 刷新后恢复编辑与 Pay |
-| 提交后断网，查询暂显示 unpaid | 不解锁；原操作恢复或后端停止旧入口后查证 |
-| Session 过期 | 查证后出现重新进入付款动作，不永久锁住 |
-| 授权成功，请款失败 | 保留授权，不引导另付 |
-| 配置错误／组件加载失败 | 显示修复或刷新页面指引，不假装付款处理中 |
-| 页面卸载后旧请求返回 | 忽略旧 UI 响应，后台付款继续跟踪 |
+```jsx
+import { replaceCheckoutSession } from "./merchant-api.js";
+async function onReplaceSession(oldSessionId) {
+  const next = await replaceCheckoutSession(oldSessionId, orderReference, uiMode, csrfToken);
+  setSetup((current) => current.sessionId === oldSessionId ? next : current);
+}
+```
+
+
+### 7.5 页面丢失后的恢复
+
+如果返回页查询发现已有付款等待买家交互，先经自己的后端鉴权并申请平台恢复入口，再让买家点击继续。商户后端只调用平台 recover 管理接口，不推断原提交键或伪造成功。原 Session 已过期也可按平台事实恢复既有 Action，不能开始另一笔付款。
+
+```javascript
+app.post("/api/checkout/recover", async (req, res) => {
+  await verifyBuyerCsrf(req);
+  const buyer = await authenticateBuyerOrGuest(req);
+  const binding = await loadOwnedCheckoutBinding(buyer, req.body.sessionId);
+  if (!binding) return res.status(404).end();
+  const recovery = await walletpay.checkoutSessions.recover(binding.sessionId);
+  res.set("Cache-Control", "no-store");
+  res.json(recovery); // recovery_url，或 recovery_not_required。
+});
+```
+
+平台恢复页仅查询／继续原操作，不创建新 Transaction。商户在返回地址继续用订单查询和 webhook 确认支付；无法恢复买家身份时先恢复身份，不只凭 Session ID 显示订单。
 
 ## 8. 手工请款、取消和退款
 
@@ -1062,13 +962,21 @@ export function CheckoutForm({ sessionId, onReplaceSession, children }) {
 
 对应管理接口拟定为 `/v1/payments/{transactionId}` 下的操作。自动模式通常不需要你调用请款；手工模式的履约时点由你的业务政策决定。Void／退款后是否可对同一订单重新收款，需按正式平台规则处理，不自动开放。
 
+### 8.1 操作资格与授权期限
+
+管理查询返回 allowed_operations、capture_before、capturable_amount 和 refundable_amount。请款前检查期限、金额和是否存在未决操作；授权期限无法确认时平台拒绝新请款并说明原因，不让商户猜测统一天数。部分请款仅在通道能力允许时开放。
+
+请款、取消、void、退款均由后端执行，返回 operation_id 及 pending／succeeded／failed／unknown；取消 succeeded 才可按平台资格评估再付，unknown 仍查证原操作。订单入口过期／SDK destroy 都不是取消授权。
+
+当前退款仍要求下游已结算；未满足时返回 not_settled，并说明可用的 cancel／void 或等待／支持操作。SDK 或接入指南不改变该账务政策。
+
 ## 9. 上线前检查
 
 - 后端计算金额；买家／游客只能获取和查看自己的订单。
 - 创建会话有稳定的订单引用、版本与持久幂等键；过期重建使用新的创建代次。
 - 前端只拿公钥和自己的会话凭证；秘密不进 URL、日志或持久化浏览器存储。
-- Pay 提交期间禁用，结果未知时不提示再次扣款。
-- 返回页与原结账页都能通过后端查询恢复结果。
+- 按 SDK canConfirm 控制 Pay，显示 snapshot.displayAmount，确认传 expectedSnapshotId；不复制恢复状态机。
+- 返回页与原结账页通过后端查询订单；丢失原 SDK 时经后端鉴权申请平台恢复入口。
 - Webhook 先验签、再持久化、再应答；worker 能恢复并去重履约。
 - 验证重复点击、多标签、旧会话在途、跳转、关页、超时、会话过期和乱序事件。
 - 使用正式测试环境和合成测试支付信息；仓库 UI 原型不处理真实支付。
@@ -1086,8 +994,9 @@ export function CheckoutForm({ sessionId, onReplaceSession, children }) {
 | `createPaymentElement()`／`mount()`（B） | 浏览器 | SDK 使用会话配置 |
 | `createCardFields()`／`mount()`（C） | 浏览器 | SDK 使用会话配置 |
 | 打开 `checkout_url`（A） | 浏览器顶层跳转 | 短期托管启动引用；无需商户前端支付 SDK |
-| `checkout.confirm()` | 浏览器 | SDK 使用会话能力并管理续接 |
-| `checkout.retryConfirmation()` | 浏览器 | 只恢复原提交关联；不新建扣款 |
+| `checkout.confirm({ expectedSnapshotId })` | 浏览器 | SDK 使用会话快照与能力并管理提交、3DS 和续接 |
+| `checkout.resume()`／`refresh()`／`subscribe()` | 浏览器 | 既有操作恢复、只读查询与状态订阅；SDK 管理幂等与资格 |
+| `POST /v1/checkout-sessions/{id}/recover` | 你的后端 | 鉴权买家后申请平台恢复页，不创建新付款 |
 | 你的订单结果接口 | 浏览器 → 你的后端 | 你的买家／游客会话 |
 | 你的 webhook 接收接口 | 平台 → 你的后端 | 独立 webhook 签名 |
 
