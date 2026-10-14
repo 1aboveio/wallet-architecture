@@ -348,6 +348,20 @@ Worldpay 文档中的“your backend”指直接接入它的系统。本架构�
 
 本平台将该地址设为自己控制的支付域后端，例如 `https://payments.walletpay.example/3ds/returns/OPAQUE_ACTION_STATE`，不直接填写外部商户的 Session `return_url`。
 
+#### 平台回流处理与等待页
+
+**`challenge.returnUrl` 可以同时作为平台后端 POST 处理入口和平台中转等待页入口，这是本平台采用的设计。** 它不是纯静态前端页面：后端先校验并持久化回流关联，幂等触发查证任务，再向浏览器返回平台 HTML，显示“验证已返回，正在确认付款”。Worldpay 明确允许接收端后端发起 verification，并在 iframe 中显示页面；等待页、异步任务和商户回流策略由本平台实现。[W1]
+
+拟定处理顺序如下：
+
+1. 后端接收并校验 POST，将信号关联到原 Action／Transaction，持久化后幂等触发查证。重复 POST 或刷新不得产生新的授权／请款。
+2. 返回平台等待页。可在保存关联后用 `303 See Other` 转到平台受控 GET 等待地址，避免刷新重放 POST；地址只带不透明引用，不带 secret、认证值或可信成功标志。
+3. 后端异步执行 verify 或 Integrated 续接，持久化结果；独立模式认证通过后继续原 Transaction 的授权与按策略请款。任务须可重试与崩溃恢复，不能只依赖 HTTP 应答后的进程内函数。
+4. 等待页／SDK 通过受限的浏览器状态接口查询同一个 Transaction。单凭等待 URL、Session ID 或浏览器提交的 outcome 不能读取任意交易；访问能力绑定 Action／实例和有效期，具体恢复机制发布前定稿。
+5. 等到可展示的支付结果后，由平台结束挑战呈现或导航到商户结果页。等待超过界面阈值时可展示 processing 并返回商户“处理中”页；阈值不改变支付事实，也不自动开放再次付款。
+
+平台后端查证不依赖等待页持续轮询。回流已经持久化后，即使页面关闭，后台仍按任务与通道事实处理；若浏览器在回流前关闭，则不能承诺已进入这一阶段。
+
 ```mermaid
 sequenceDiagram
     participant S as SDK 与挑战浏览器
@@ -362,14 +376,29 @@ sequenceDiagram
     C-->>S: 挑战流程自动驱动浏览器回流
     S->>P: 自动 POST returnUrl：TransactionId、MD
     P->>P: 校验关联并持久化返回信号
-    P->>W: verify（后端认证，保存的 reference）
+    P-->>S: 平台等待页：正在确认付款
+    P->>W: 异步 verify（后端认证，保存的 reference）
     W-->>P: authenticated 或其他认证结果
-    P-->>S: 平台回流页面：交互已返回
+    P->>P: 保存结果，按第 6.7 节续接原支付
+    S->>P: 受限查询原 Transaction 状态
+    P-->>S: 支付状态投影，按呈现模式结束或回流
 ```
 
 浏览器 POST 不携带我们的 `sk_` 或 Worldpay BasicAuth，不要求外部商户买家 cookie、旧 Session client_secret 或续接凭证仍有效。它不是普通会话 API：用预先持久化的不透明 state、Action、通道账户／环境和 provider reference 做关联，再用后端 API 查证。返回的 `TransactionId`／`MD` 都是待校验输入，不能据此直接写成功或替换本地记录。
 
-平台后端接收 POST 后返回自己提供的回流 HTML。该页面／支付域协调页面中的脚本发送安全 `postMessage`，例如 `three_ds.return_received`、Action ID 和实例 ID；SDK 校验 origin/source/schema 后触发有限状态查询。这段通知脚本由支付公司实现，用于 UI 恢复，不是 Worldpay 原生的成功支付通知。通知发出不必等待付款成功，也不能让浏览器的 `outcome` 决定服务端事实。
+平台回流等待页／支付域协调页面可发送安全 `postMessage`，例如 `three_ds.return_received`、Action ID 和实例 ID；SDK 校验 origin/source/schema 后触发有限状态查询。该提示可在 verify 完成前发出，但只表示回流已收到，不意味着立即关闭等待界面或跳转成功页。用于完成呈现的后续消息同样只提示 SDK 查询后端；浏览器的 `outcome` 不能决定服务端事实。这段脚本由支付公司实现，不是 Worldpay 原生的成功支付通知。
+
+#### 等待结束后的呈现与商户回流
+
+| 当前浏览器上下文 | 平台如何结束等待 | 商户接入体验 |
+| --- | --- | --- |
+| 顶层托管页／整页挑战 | 平台控制顶层上下文时，导航到创建 Session 时已校验登记的商户 `return_url` | 商户结果页调用自己的后端确认订单；URL 不传可信成功状态 |
+| 商户页中的 challenge iframe | 等待页通知平台 SDK，SDK 查证后关闭挑战层并更新原支付区域；若需整页跳转，由父页 SDK 按导航契约执行 | 通常留在商户结账页，不强制跳回结果页 |
+| 独立弹窗 | 通知 opener 中的 SDK，确认后关闭弹窗并更新原页；opener 丢失时显示状态与返回商户的安全操作 | 弹窗受浏览器手势与跨窗口限制约束，不能假设始终可关闭或控制父页 |
+
+iframe 内直接重定向到商户地址，只会在 iframe 内加载商户结果页，不会自动改变顶层页面。不能让挑战 frame 无条件导航顶层。导航目标从服务端保存的已校验配置读取，不能接受回流 POST 或 URL 中任意提供的跳转地址。
+
+只有后端确认的授权／请款事实才能显示相应结果。verify 成功时如授权仍在进行，等待页继续显示“正在确认付款”；认证或支付明确失败时显示失败结果；未决时显示 processing。平台可在这些情况下返回商户结果页，但不能把任何一次返回本身当成付款成功。
 
 原 `/actions/{actionId}/complete` 只保留为 UI 提示和兜底触发入口，不能成为服务器知道挑战完成的唯一途径。正式实现以回流已经持久化、后端查证与通道支付结果为准。
 
