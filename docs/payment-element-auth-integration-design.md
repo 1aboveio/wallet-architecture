@@ -362,27 +362,62 @@ Worldpay 文档中的“your backend”指直接接入它的系统。本架构�
 
 平台后端查证不依赖等待页持续轮询。回流已经持久化后，即使页面关闭，后台仍按任务与通道事实处理；若浏览器在回流前关闭，则不能承诺已进入这一阶段。
 
+以下两图分别展示挑战回流和商户结果流转，明确列出用户浏览器与商户后端。SDK 是用户浏览器中的平台代码，以独立逻辑泳道表示，不是另一台服务器；浏览器泳道表示页面、frame 和实际 HTTP 导航。商户后端接收平台支付事件，不接收 Worldpay challenge return。
+
+**图一：挑战启动、用户浏览器自动回流与后端查证。** 本图以独立 3DS 模式为例；Integrated 模式的后端续接见第 6.7 节。
+
 ```mermaid
 sequenceDiagram
-    participant S as SDK 与挑战浏览器
+    participant B as 用户浏览器
+    participant S as 平台 SDK
     participant P as 支付公司后端
     participant W as Worldpay API
     participant C as Cardinal 与 issuer
     P->>W: authenticate（平台 challenge.returnUrl）
     W-->>P: challenge URL、JWT、reference、verify 链接
     P-->>S: 平台 launcher 指令
-    S->>C: 表单 POST：JWT、MD
-    S->>C: 买家完成挑战
-    C-->>S: 挑战流程自动驱动浏览器回流
-    S->>P: 自动 POST returnUrl：TransactionId、MD
-    P->>P: 校验关联并持久化返回信号
-    P-->>S: 平台等待页：正在确认付款
-    P->>W: 异步 verify（后端认证，保存的 reference）
+    S->>B: 加载受控 launcher，运行自提交表单
+    B->>C: 表单 POST：JWT、MD
+    C-->>B: 展示挑战，用户完成银行验证
+    C-->>B: 挑战流程自动驱动浏览器回流
+    B->>P: 自动 POST returnUrl：TransactionId、MD
+    P->>P: 校验关联、持久化并幂等触发任务
+    P-->>B: 平台等待页：正在确认付款
+    P->>W: 异步 verify（保存的 reference）
     W-->>P: authenticated 或其他认证结果
     P->>P: 保存结果，按第 6.7 节续接原支付
-    S->>P: 受限查询原 Transaction 状态
-    P-->>S: 支付状态投影，按呈现模式结束或回流
 ```
+
+**图二：平台等待页、SDK 与商户后端如何获取结果。** 承接图一的持久化任务；查询、事件投递和页面回流可能交错，以下只画一种发生顺序。
+
+```mermaid
+sequenceDiagram
+    participant B as 用户浏览器
+    participant S as 平台 SDK
+    participant P as 支付公司后端
+    participant M as 商户后端
+    P->>P: 后台查证并续接原支付，保存状态与事件
+    B->>P: 平台等待页受限查询原 Transaction
+    P-->>B: 支付状态或 processing
+    opt iframe 或弹窗，原页 SDK 仍存在
+        B->>S: 平台等待页安全消息：状态已更新
+        S->>P: 受限查询，验证当前支付状态
+        P-->>S: 浏览器安全状态投影
+        S->>B: 关闭挑战层，更新原商户结账页
+    end
+    opt 顶层整页回流
+        B->>M: 导航到已登记的商户 return_url
+        M-->>B: 商户结果页
+    end
+    P->>M: 独立签名 webhook：支付状态变化
+    B->>M: 结账页或结果页查询订单状态
+    M->>P: 服务端权威查询，校验版本与金额
+    P-->>M: Order 汇总与实际支付事实
+    M->>M: 幂等应用订单与履约效果
+    M-->>B: 商户可展示的订单结果
+```
+
+图二的受限等待页查询可由页面自身或支付域协调运行时执行。整页跳转后原商户 SDK 可能已经销毁，因此不把 SDK 消息作为顶层回流的前提；用户浏览器返回商户时，也不携带用于决定履约的可信成功标志。
 
 浏览器 POST 不携带我们的 `sk_` 或 Worldpay BasicAuth，不要求外部商户买家 cookie、旧 Session client_secret 或续接凭证仍有效。它不是普通会话 API：用预先持久化的不透明 state、Action、通道账户／环境和 provider reference 做关联，再用后端 API 查证。返回的 `TransactionId`／`MD` 都是待校验输入，不能据此直接写成功或替换本地记录。
 
