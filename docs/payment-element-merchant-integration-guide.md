@@ -1,228 +1,118 @@
 # Payment Element 商户接入指南
 
-状态：本指南配套拟定中的设计。接口尚未实施，细节以契约为准。
+面向：需要在网站上接入收款的商户开发者。  
+修订日期：2026-10-14。状态：拟定接口的接入说明，尚非可调用的正式 API。包名、域名、响应字段和错误码为设计示例；发布时以正式契约为准。
 
-## 写给谁看
+你需要具备 HTTP、JavaScript／React 和前后端分工的基本知识。本文从创建订单开始说明完整接入，不要求你阅读平台内部设计。
 
-- 你是商户的开发工程师。你要在自家网站上收款。
-- 本文**假设你没有支付对接经验**。每个支付概念第一次用到时都会解释。
-- 你只需要具备这些预备知识：TypeScript、HTTP、基本的前后端分工。
-- **本文自成一体。** 读完本文就能完成接入，不需要阅读其他文档。文末的延伸阅读是可选的。
+## 1. 你要做什么
 
-## 1. 整体时序（先看全貌）
+你可以选择整页托管、完整支付组件或独立安全字段；三种共用后端 Session 与支付结果处理。接入分为四项工作：
 
-先看完整的付款流程。图里的名词在 §2 解释，具体做法在 §3–§6。看图先看走向，不必逐词都懂。
-
-### 1.1 全景：你要做的四件事
-
-| 步骤 | 在哪里做 | 做什么 | 详见 |
-| --- | --- | --- | --- |
-| 1 | 你的服务端 | 创建支付会话，拿到会话凭证 | §3 |
-| 2 | 你的网页 | 挂载支付组件，让买家付款 | §4 |
-| 3 | 你的网页 + 服务端 | 处理跳转回来的买家，查权威结果 | §5 |
-| 4 | 你的服务端 | 接收 webhook，更新订单 | §6 |
-
-全景流程是这样：
-
-```mermaid
-sequenceDiagram
-    actor Buyer as 买家
-    participant Page as 你的网页
-    participant Server as 你的服务器
-    participant Pay as 支付平台
-
-    Buyer->>Page: 点“去付款”
-    Page->>Server: 为这笔订单发起收款
-    Server->>Pay: ① 创建支付会话（带私密钥）
-    Pay-->>Server: 会话凭证 client_secret
-    Server-->>Page: 公钥 + 会话凭证
-    Page->>Pay: ② 挂载支付组件
-    Buyer->>Page: 填卡，点 Pay
-    Page->>Pay: 确认付款
-    Pay-->>Page: 界面结果（仅供参考）
-    opt 买家被带去银行验证后跳回
-        Buyer->>Page: 跳转回来
-        Page->>Server: ③ 查询权威结果
-    end
-    Pay-->>Server: ④ webhook：真正的支付结果
-    Note over Server: 更新订单、决定发货
-```
-
-下面按步骤展开，每步都配有可直接参考的代码。
-
-### 1.2 直接付款（没有银行验证）
-
-最常见的流程。买家填卡，点 Pay，结束。
-
-```mermaid
-sequenceDiagram
-    actor Buyer as 买家
-    participant Page as 你的网页
-    participant Server as 你的服务器
-    participant Pay as 支付平台
-    participant Bank as 通道和银行
-
-    Buyer->>Page: 填卡，点 Pay
-    Page->>Pay: confirm()
-    Pay->>Bank: 请求授权（自动模式下同时请款）
-    Bank-->>Pay: 结果
-    alt 成功
-        Pay-->>Page: captured 或 authorized
-        Pay-->>Server: webhook：支付成功
-        Server->>Server: 更新订单，按你的政策发货
-    else 失败
-        Pay-->>Page: failed（带错误码）
-        Pay-->>Server: webhook：失败
-        Server->>Server: 更新订单
-    end
-```
-
-### 1.3 银行验证 + 付款（3DS）
-
-多一步“银行确认是本人”。你的代码**不变**，仍是同一个 `confirm()`。总览图里 3DS **折叠为一步**；它由 PaymentElement 内部实现（你不需要写任何 3DS 代码），流程细节见 §7.1。
-
-```mermaid
-sequenceDiagram
-    actor Buyer as 买家
-    participant Page as 你的网页
-    participant Server as 你的服务器
-    participant Pay as 支付平台
-    participant Bank as 通道和银行
-    participant DS3 as 3DS 验证（PaymentElement 内部）
-
-    Buyer->>Page: 填卡，点 Pay
-    Page->>Pay: confirm()
-    Pay->>Bank: 请求授权
-    Bank-->>Pay: 需要 3DS 认证
-    Pay->>DS3: 持卡人认证（细节见 §7.1）
-    DS3-->>Pay: 认证结果（通过 / 失败 / 取消）
-    Pay->>Bank: 恢复同一笔授权
-    Bank-->>Pay: 授权 / 请款结果
-    alt 浏览器还活着
-        Pay-->>Page: captured 或 authorized
-    else 已跳转离开
-        Note over Page: 跳转指令已随 confirm() 响应下发。<br/>支付结果不从 confirm() 回来，这是正常的。
-    end
-    Pay-->>Server: webhook：最终结果（必达）
-    Server->>Server: 更新订单
-    opt 买家跳回你的页面
-        Buyer->>Page: 跳转回来
-        Page->>Server: 查询权威结果
-    end
-```
-
-## 2. 背景：一次在线支付都发生了什么
-
-### 2.1 五个参与方
-
-一次卡支付涉及五方。你只需要记住自己的位置。
-
-| 参与方 | 做什么 | 对你的意义 |
+| 工作 | 位置 | 目的 |
 | --- | --- | --- |
-| 买家 | 付钱的人 | 在你的网页里填卡或用钱包 |
-| 商户（你） | 卖东西收钱 | 接入本 SDK |
-| 支付平台 | 处理支付流程 | 本文所说的“平台” |
-| 收单机构（通道） | 平台对接的支付渠道 | 平台替你对接，你不直接接触 |
-| 发卡行 | 买家的银行 | 它决定这笔钱批不批 |
+| 创建支付会话 | 你的后端 | 使用真实订单金额，为买家准备付款入口 |
+| 打开支付页或挂载与确认付款 | 你的结账页／平台托管页 | 按选择的方案展示 UI，平台处理支付和银行验证 |
+| 提供结果查询与返回页 | 你的前后端 | 买家跳回、刷新或网络异常时显示真实结果 |
+| 接收 webhook | 你的后端 | 页面关闭后仍能收到支付状态，更新订单 |
 
-卡组织（Visa、Mastercard 等）连接收单和发卡。你不直接接触它。
+你继续使用自己的订单系统和买家登录／游客结账机制。买家无需登录支付平台，你也无需编写银行验证或支付平台 token 刷新代码。
+
+### 1.1 一笔订单与一次付款尝试
+
+- **你的业务订单**：你的网站保存的购物订单，包括商品、库存、金额和买家。
+- **支付会话（Checkout Session）**：平台为某个订单版本创建的付款入口，固定金额、币种和支付配置。
+- **支付交易（Transaction）**：买家的一次付款尝试。明确失败后的再次尝试是新的 Transaction；银行验证仍属于原 Transaction。
+
+平台还会在内部维护支付 Order。**创建会话时平台自动创建或关联它，你无需先调用另外的创建订单接口。** 你只需提供稳定的业务订单号与版本。
+
+### 1.2 完整流程（B／C；A 的前端由平台页执行）
 
 ```mermaid
-flowchart LR
-    Buyer[买家] --> Page[你的网页]
-    Page --> Pay[支付平台]
-    Pay --> Channel[收单机构]
-    Channel --> Issuer[发卡行]
+sequenceDiagram
+    actor B as 买家
+    participant W as 你的网页与 SDK
+    participant M as 你的后端
+    participant P as 支付平台
+    B->>M: 创建业务订单
+    M->>M: 检查库存并计算总价
+    W->>M: 请求该订单的付款入口
+    M->>P: 创建支付会话（服务端密钥）
+    P-->>M: Session ID＋client_secret
+    M-->>W: 公钥＋client_secret
+    W->>P: 初始化支付组件
+    B->>W: 填写信息并点击 Pay
+    W->>P: confirm()
+    opt 需要银行验证
+        P-->>W: SDK 显示验证或执行跳转
+        Note over W,P: 同一次 Transaction 继续处理
+    end
+    P-->>M: 签名 webhook
+    W->>M: 查询订单支付结果
+    M->>P: 用服务端密钥查询
+    P-->>M: 真实支付状态
+    M->>M: 幂等更新业务订单
+    M-->>W: 展示给买家的结果
 ```
 
-### 2.2 三个动作：授权、请款、结算
+Webhook 和查询可以任意先后到达。浏览器跳转或关闭后，SDK 的函数调用可能不会返回，后端仍必须能够处理结果。
 
-用酒店押金类比。记住这三个词，后文一直用。
+### 1.3 选择你的接入方案
 
-- **支付授权 (authorization)**：银行批准并冻结这笔钱。就像入住时酒店刷押金。钱还在买家账户里，但不能再花。
-- **请款 (capture)**：真正把钱划走。就像退房结账。
-- **结算 (settlement)**：钱经过清算，最终进入你的可提现余额。它晚于请款。
+| 方案 | 你在前端做什么 | 谁负责 Pay 按钮 | 哪些内容可定制 |
+| --- | --- | --- | --- |
+| A. Hosted Payment Page | 打开平台返回的支付页 URL，无需支付 SDK | 平台 | 支持的品牌颜色、logo、语言 |
+| B. Payment Element | 将一个完整支付组件挂载到你的页面 | 你负责普通 Pay；组件负责方式专用按钮 | 支付区域布局和受限主题；周边页面由你设计 |
+| C. Hosted Fields | 分别指定卡号、有效期、CVV 字段容器 | 你 | 字段排列、周边标签、错误位置和受限输入样式 |
 
-创建支付会话时你选一种请款模式：
+A 最少前端代码；B 适合保留商城结账体验并支持多支付方式；C 适合深度定制卡表单，首期仅卡支付。三种都是拟定产品方案，以下先讲共享后端，再分别给接入代码。
 
-- `automatic`（自动请款）：授权和请款一步完成。大多数电商用这个。
-- `manual`（手动请款）：先授权，发货前再请款。适合预售、酒店、租车这类延迟交付。
+一个 Payment Element 不代表只有一个 iframe。B 对你是一个组件，内部可包含多个安全字段 frame；C 是多个字段容器，各由 SDK 挂载安全 iframe。你不需要自己创建或访问这些 frame。
 
-### 2.3 为什么要用支付组件，而不是自己做表单
+## 2. 接入前准备：凭证与地址
 
-不要自己收集卡号。直接收卡号会让你承担卡组织的合规义务（PCI DSS），风险极高。
+### 2.1 三种凭证
 
-所以支付组件的输入框运行在**平台的域名**里（跨域 iframe）。你的网页碰不到卡号。你只拿到“这张卡能不能付”的结果。这是刻意设计，不是技术限制。iframe 的实现完全由平台负责（JS 实现细节见内部设计说明 §3.4），你不写 iframe 代码。
+| 凭证 | 在哪里使用 | 用途 |
+| --- | --- | --- |
+| 公钥 `pk_test_...`／`pk_live_...` | 浏览器，可写入前端配置 | 公开商户标识，用来加载对应配置；不能授权付款 |
+| 服务端私密钥 `sk_test_...`／`sk_live_...` | 仅你的后端 | 创建会话、查询支付、请款、取消和退款，操作受账户权限限制 |
+| webhook 签名密钥 | 仅你的后端 | 验证收到的事件是否由平台发送 |
 
-### 2.4 什么是 3DS（银行验证）
+B／C 创建会话还会返回 **`client_secret`**。这是该会话的敏感访问凭证，只发给有权支付这笔订单的买家，再交给 SDK。它不是公开值，也不是你的服务端密钥。不要放入 URL、浏览器持久化存储、日志、埋点、错误上报或截图。
 
-银行有时要求买家证明“是本人”。例如短信验证码，或在银行 App 里点确认。这一步叫 **3-D Secure（3DS）**。
+A 返回 `checkout_url`，商户前端无需公钥、client_secret 或支付 SDK，但服务端仍使用私密钥和独立 webhook 密钥。
 
-它可能出现在付款过程中。买家验证完成后，付款继续。对你的代码来说，有验证和没验证是**同一个函数调用**。你不需要为此写分支代码。
+测试与正式环境使用配套公钥、私密钥、会话和 webhook 配置，不能混用。本文以直接商户的私密钥接入为例；代表多个商户操作的平台／插件使用商户 OAuth 授权，不能向商户索取无限制密钥。
 
-### 2.5 为什么“付没付成”要以后端为准
+### 2.2 登记地址
 
-网页可能被买家关掉。网络可能断。银行页面跳转后可能不回来。所以：
+接入前在平台登记：B／C 的商户结账页 origin、三种模式共同的买家返回 URL 和后端 webhook 地址。它们用途不同：
 
-- 浏览器显示的结果只是**界面状态**，只能参考，不能作为发货依据。
-- 真正的支付结果由两条可靠途径到达：平台主动发给你的 **webhook**（第 4 步），和你的后端**主动查询**（第 3 步的一部分）。
-- 两条路都会到，先后不定。你的处理函数必须两条都能处理。
+| 地址 | 谁访问 | 什么时候访问 |
+| --- | --- | --- |
+| 结账页，例如 `https://shop.example/checkout` | 买家 | 填写支付信息 |
+| 返回页，例如 `https://shop.example/payments/return` | 买家浏览器／银行验证回流 | 跳转付款后回来 |
+| webhook，例如 `https://shop.example/api/walletpay-webhook` | 平台服务器 | 通知支付状态 |
 
-## 3. 第 1 步：服务端创建支付会话
+`return_url` 不是支付提交地址，也不是 webhook 地址。SDK 直接向平台的支付域提交确认请求；你不需要代理卡数据或 confirm 请求。
 
-### 3.1 为什么金额必须由服务端说了算
+按正式接入配置设置页面 CSP、frame 和 connect 权限。具体域名与支付方式要求以发布清单为准，不使用放开所有来源的通配配置。
 
-网页里的价格可以被买家篡改（改浏览器里的数字很容易）。所以付款金额不能由网页提交。正确做法：在服务端创建**支付会话**，把金额、币种、订单号冻结进这个会话。之后网页只能用这个会话付款，改不了金额。
+## 3. 第一步：创建业务订单与支付会话
 
-### 3.2 你的“私密钥”
+### 3.1 先在你的后端创建订单
 
-- 在平台后台创建得到。它以 `sk_` 开头（测试环境 `sk_test_...`，正式环境 `sk_live_...`）。
-- 它代表你的商户身份。**谁拿到它，谁就能以你的名义收退款。**
-- 只放在服务端的环境变量里。不要进前端代码。不要提交进 Git。不要出现在聊天记录里。
-- 测试和正式是两套密钥、两套数据。测试环境的数据不会跑到正式环境。
+你的后端确认商品、库存、买家或游客身份，并计算总价。浏览器可以提交商品选择或订单引用，**支付金额必须从后端订单取得**。
 
-### 3.3 代码
+订单需要稳定引用 `merchant_order_reference` 和版本 `order_version`。购物车变化时保留订单引用、增加版本；仅因付款失败或会话过期，不必修改订单版本。
 
-用服务端 SDK（`@walletpay/node`）。不用 SDK、直接调 REST 也可以，两者等价。
-
-```ts
-// server/checkout.ts
-import { WalletPay } from "@walletpay/node";
-
-// sk_test_... / sk_live_...；绝不出现在前端代码或响应里
-const walletpay = new WalletPay(process.env.WALLETPAY_SECRET_KEY!);
-
-app.post("/api/checkout", async (req, res) => {
-  const order = await loadOrder(req); // 你自己的权威订单与总价
-
-  const session = await walletpay.checkoutSessions.create(
-    {
-      merchant_order_reference: order.reference,
-      order_version: order.version,
-      amount: { value: order.totalMinor, currency: order.currency },
-      capture_mode: "automatic", // 或 "manual"
-      return_url: "https://shop.example/payments/return",
-      locale: "zh-CN",
-      expires_in_seconds: 1800,
-    },
-    // 幂等键：防止“点了两次/网络重试”创建两个会话
-    { idempotencyKey: `checkout_${order.reference}_v${order.version}` },
-  );
-
-  // 只把 client_secret 发给该买家的浏览器页面
-  res.json({
-    clientSecret: session.client_secret,
-    publicKey: "pk_test_merchant",
-  });
-});
-```
-
-等价的 REST 请求（不用 SDK 时）：
+### 3.2 用服务端密钥创建会话
 
 ```http
 POST /v1/checkout-sessions
-Authorization: Bearer sk_test_...
-Idempotency-Key: checkout_ORDER-100123_v1
+Authorization: Bearer sk_test_example
+Idempotency-Key: checkout_ORDER-100123_v1_g1
 Content-Type: application/json
 ```
 
@@ -230,6 +120,7 @@ Content-Type: application/json
 {
   "merchant_order_reference": "ORDER-100123",
   "order_version": 1,
+  "ui_mode": "embedded",
   "amount": { "value": 1099, "currency": "USD" },
   "capture_mode": "automatic",
   "return_url": "https://shop.example/payments/return",
@@ -238,528 +129,960 @@ Content-Type: application/json
 }
 ```
 
-三个要点：
+| 参数 | 说明 |
+| --- | --- |
+| `merchant_order_reference` | 你的稳定业务订单号；用于关联和对账 |
+| `order_version` | 订单版本；金额或购物车变化时增加 |
+| `ui_mode` | `hosted`、`embedded` 或 `fields`；省略默认 embedded，创建后不可变 |
+| `amount.value` | 货币最小单位金额；USD 的 `1099` 表示 10.99 美元 |
+| `amount.currency` | 三位币种代码，如 USD、HKD、JPY |
+| `capture_mode` | `automatic` 自动授权并请款；`manual` 仅先授权 |
+| `return_url` | 已登记的买家返回地址，由 SDK 自动使用 |
+| `locale` | 可选，组件语言 |
+| `expires_in_seconds` | 可选，新付款入口的有效期；示例为 30 分钟，正式范围待发布 |
 
-1. 金额用**货币最小单位**。`1099` + `USD` 表示 10.99 美元。日元没有小数位，`100` + `JPY` 就是 100 日元。
-2. **幂等键**用“订单号 + 订单版本”组成，保持稳定。同一个请求重试一百次，也只创建一个会话。
-3. **购物车变了就创建新会话**（`order_version` 加一），不要修改旧会话的金额。买家已经在付的旧会话会被平台停用。
+支付授权表示银行批准并保留金额；请款表示向通道确认收取金额；结算是后续资金进入你的可提现余额。三者不是同一时点。默认示例使用自动请款，手工模式的后续操作见 §8。
 
-### 3.4 请求参数说明
-
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `merchant_order_reference` | 是 | 你的订单号。平台用它对账 |
-| `order_version` | 是 | 订单版本。购物车变一次加一 |
-| `amount.value` | 是 | 金额，货币最小单位 |
-| `amount.currency` | 是 | 币种，三位代码（USD、HKD、JPY） |
-| `capture_mode` | 是 | `automatic` 或 `manual`（见 §2.2） |
-| `return_url` | 是 | 买家跳转回来的地址。必须是平台登记过的域名 |
-| `locale` | 否 | 组件界面语言，如 `zh-CN` |
-| `expires_in_seconds` | 否 | 会话有效期，建议 15–30 分钟 |
-
-### 3.5 返回值与会话状态
-
-创建成功返回：
+下面是 B／C 的拟定创建响应，A 的 URL 用法见 §4.1：
 
 ```json
 {
-  "id": "cs_01J...",
-  "client_secret": "cs_01J..._secret_...",
-  "expires_at": "2026-09-24T12:30:00Z",
+  "id": "cs_example",
+  "order_id": "ord_example",
+  "ui_mode": "embedded",
+  "client_secret": "cs_example_secret_example",
+  "expires_at": "2026-10-14T00:00:00Z",
   "session_status": "open",
-  "payment_status": "unpaid"
+  "transaction_id": null
 }
 ```
 
-两个状态字段分开看：
+此时平台已关联 Order 和 Session，**尚未发起付款，也没有 Transaction**。`order_id` 是平台内部支付订单引用，不替代你的购物订单。
 
-- `session_status`：会话的生命周期。`open`（可付款）→ `processing`（付款进行中）→ `completed` 或 `expired`。
-- `payment_status`：钱的状态。`unpaid`（未付）或 `paid`（已付）。
+### 3.3 三种方案共享的后端集成示例
 
-**普通查询接口永远不会再返回 `client_secret`。** 只有创建接口返回它。所以拿到后要立刻交给浏览器，不要指望再查一次。
-
-### 3.6 你还会用到的接口
-
-| 接口 | 用途 |
-| --- | --- |
-| `GET /v1/checkout-sessions/{id}` | 查会话状态和关联的支付（§5 用它） |
-| `GET /v1/payments/{id}` | 查权威的授权 / 请款状态 |
-| `POST /v1/checkout-sessions/{id}/expire` | 主动作废会话（例如订单取消） |
-
-手工请款、取消、退款是另外的管理接口。它们同样用私密钥调用。退款的累计金额不能超过原请款金额。
-
-## 4. 第 2 步：浏览器挂载支付组件
-
-### 4.1 页面会拿到两个值
-
-第 1 步的接口返回两个字符串。它们用途不同：
-
-| 值 | 样子 | 能公开吗 | 作用 |
-| --- | --- | --- | --- |
-| 公钥 | `pk_test_merchant` | 能。前端代码可以写死 | 告诉组件你是哪家商户、用哪个环境 |
-| 会话能力凭证 | `cs_01J..._secret_...` | **不能公开**。只能发给正在付款的那个买家 | “一次性门票”，只对这一笔订单有效 |
-
-为什么要这样分：公钥泄露没有风险（它不授权任何付款操作）；会话能力凭证泄露的风险也有限（只对这笔会话有效、几分钟后过期），但仍要按敏感值对待：不要放进 URL、日志、埋点和截图。
-
-### 4.2 代码（vanilla JS / TypeScript）
-
-JS 与 React 共用同一核心 SDK，行为完全一致，任选一种。纯 JavaScript 项目去掉类型标注即可。`createCheckout` 与 `confirm()` 都由 SDK 直接提交到平台的托管运行时端点（不是你的服务器）；`returnUrl` 是买家跳转回来的地址，不是提交目标。
+下面使用拟定 Node SDK。业务辅助函数由你的应用实现；示例展示接线方式，不是可直接运行的完整服务器。
 
 ```ts
-// checkout-page.ts
-import { loadWalletPay } from "@walletpay/checkout-js";
+import { WalletPay } from "@walletpay/node";
 
-// publicKey 与 clientSecret 来自第 1 步的后端接口
-const walletPay = await loadWalletPay({ publicKey });
-const checkout = await walletPay.createCheckout({ clientSecret });
+const walletpay = new WalletPay(process.env.WALLETPAY_SECRET_KEY!);
 
-const paymentElement = checkout.createPaymentElement({ layout: "accordion" });
-paymentElement.mount("#payment-element");
+app.post("/api/checkout", async (req, res) => {
+  await verifyBuyerCsrf(req);
+  const buyer = await authenticateBuyerOrGuest(req);
+  const uiMode = await validateAllowedCheckoutMode(buyer, req.body.uiMode ?? "embedded");
+  // 浏览器只提供引用；函数校验归属，读取后端权威金额与版本。
+  const order = await loadOwnedPayableOrder(buyer, req.body.orderReference);
 
-paymentElement.on("ready", () => setFormEnabled(true));
-paymentElement.on("change", ({ complete, paymentMethod }) => {
-  setPayEnabled(complete); // 填完整了才亮起 Pay 按钮
-  recordSelectedMethod(paymentMethod);
-});
-paymentElement.on("loaderror", ({ code, requestId }) => {
-  showIntegrationError(code, requestId);
-});
-
-// 银行验证/跳转期间锁住界面（见 §2.4）
-checkout.on("actionstart", ({ type }) => disableCheckoutNavigation(type));
-checkout.on("actionend", ({ type, outcome }) => {
-  restoreCheckoutNavigation(type, outcome);
-});
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  // 注意：3DS 跳转场景下 confirm() 响应会带跳转 URL，SDK 自动跳转；
-  // 跳转会销毁 JS 上下文，支付结果不会从这个 Promise 回来
-  const result = await checkout.confirm({
-    returnUrl: "https://shop.example/payments/return",
-  });
-
-  switch (result.status) {
-    case "authorized":
-      showAuthorizedState(result.capture); // 已授权；capture: manual / pending / failed
-      break;
-    case "captured":
-      showPaymentReceived(); // 已扣款
-      break;
-    case "processing":
-      showProcessingState(); // 处理中。以 webhook 为准
-      break;
-    case "failed":
-      showPaymentError(result.error); // 失败。提示买家重试或换支付方式
-      break;
+  // 后端持久化并原子认领创建代次，网络重试复用同一代次／幂等键。
+  if (req.body.replaceSessionId) {
+    const old = await loadOwnedCheckoutBinding(buyer, req.body.replaceSessionId);
+    if (!old || old.orderReference !== order.reference) return res.status(404).end();
+    // 查询 Order 汇总并确认旧入口停止新提交；未决／授权未结束则不开放新付款。
+    await reconcileAndStopCheckoutEntry(old, order);
   }
+  const generation = await claimCheckoutGeneration(order, uiMode);
+  const session = await walletpay.checkoutSessions.create(
+    {
+      merchant_order_reference: order.reference,
+      order_version: order.version,
+      ui_mode: uiMode,
+      amount: { value: order.totalMinor, currency: order.currency },
+      capture_mode: "automatic",
+      return_url: "https://shop.example/payments/return",
+      locale: "zh-CN",
+      expires_in_seconds: 1800,
+    },
+    {
+      idempotencyKey:
+        `checkout_${order.reference}_v${order.version}_g${generation}`,
+    },
+  );
+
+  await saveCheckoutReference(order, generation, session.id, session.order_id);
+  res.set("Cache-Control", "no-store");
+  if (uiMode === "hosted") {
+    return res.json({ sessionId: session.id, checkoutUrl: session.checkout_url });
+  }
+  res.json({
+    sessionId: session.id,
+    publicKey: process.env.WALLETPAY_PUBLIC_KEY,
+    clientSecret: session.client_secret,
+  });
 });
-
-// 页面离开时清理
-// paymentElement.destroy();
 ```
 
-### 4.3 代码（React，与 4.2 等价）
+调用你自己的接口仍使用你自己的买家／游客鉴权和相应 CSRF 防护。私密钥永远不下发给浏览器。
 
-```tsx
-// CheckoutPage.tsx —— 与 4.2 覆盖相同的事件与结果处理
-import { useEffect, useState } from "react";
+### 3.4 什么时候复用，什么时候重建
+
+| 情况 | 做法 |
+| --- | --- |
+| 创建请求网络重试 | 同一幂等键、同一 payload；返回原会话 |
+| 同一幂等键但金额不同 | 平台拒绝；修正订单版本和创建请求 |
+| 明确付款失败，会话仍有效 | 在原会话中重试；新的付款尝试产生新 Transaction |
+| 会话过期，订单内容未变 | 后端增加会话创建代次，用新幂等键创建 Session；订单版本不变 |
+| 购物车或金额变化 | 后端增加订单版本，创建替换 Session |
+| 原付款结果未知或已授权 | 查询／处理原交易，不能通过新 Session 绕过限制再付 |
+
+普通会话查询不会返回 `client_secret`；创建请求在规定保留窗口内的幂等重放会返回原响应。你不能把“相同订单版本永远复用同一键”作为过期会话重建策略。
+
+## 4. 第二步：按方案接入前端
+
+本章按 A／B／C 展示 JavaScript 和 React。三种都使用第 3 章的后端创建接口与第 5、6 章的结果处理。共享请求、恢复控制器及 React 表单在 §7.2；你可先读选定方案，再查看共享代码。SDK 尚未发布，以下是拟定接线契约。
+
+### 4.1 A：整页托管
+
+后端创建 hosted Session，只下发 sessionId 与 checkoutUrl。平台托管页拥有支付表单和 Pay，商户不需要支付 SDK；浏览器顶层跳转后，最后回到你的登记 return_url。
+
+#### 4.1.1 JavaScript
+
+页面提供 #open-checkout 按钮和 #payment-message。orderReference、csrfToken 由商户初始化。
+
+```javascript
+import { requestCheckoutSession } from "./merchant-api.js";
+
+const button = document.querySelector("#open-checkout");
+const message = document.querySelector("#payment-message");
+const controller = new AbortController();
+let locked = false;
+let disposed = false;
+
+async function openHosted() {
+  if (locked || disposed) return;
+  locked = true;
+  button.disabled = true;
+  try {
+    const setup = await requestCheckoutSession(orderReference, "hosted", csrfToken, controller.signal);
+    if (!disposed) window.location.assign(setup.checkoutUrl);
+  } catch (error) {
+    if (!disposed) {
+      message.textContent = error.message;
+      locked = false;
+      button.disabled = false;
+    }
+  }
+}
+button.addEventListener("click", openHosted);
+
+export function dispose() {
+  disposed = true;
+  controller.abort();
+  button.removeEventListener("click", openHosted);
+}
+```
+
+离开路由调用 dispose。此处只创建付款入口，尚未扣款；创建失败重试由后端复用幂等键。checkoutUrl 只能来自自己的受保护后端，按正式配置检查平台目的域，不接受任意用户输入。
+
+#### 4.1.2 React
+
+```jsx
+import { useEffect, useRef, useState } from "react";
+import { requestCheckoutSession } from "./merchant-api.js";
+
+export function HostedPay({ orderReference, csrfToken }) {
+  const lock = useRef(false);
+  const pending = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => () => pending.current?.abort(), []);
+
+  async function openHosted() {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    const controller = new AbortController();
+    pending.current = controller;
+    try {
+      const setup = await requestCheckoutSession(orderReference, "hosted", csrfToken, controller.signal);
+      if (!controller.signal.aborted) window.location.assign(setup.checkoutUrl);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setMessage(error.message);
+        lock.current = false;
+        setBusy(false);
+      }
+    }
+  }
+  return <>
+    <button type="button" disabled={busy} onClick={openHosted}>去付款</button>
+    <p aria-live="polite">{message}</p>
+  </>;
+}
+```
+
+订单引用／版本变化时用 key 替换该入口。A 不使用支付 Provider，不需要商户调用 confirm；平台页执行支付与 3DS。
+
+### 4.2 B：完整 Payment Element
+
+后端创建 embedded Session，返回 sessionId、publicKey、clientSecret。组件拥有支付方式与表单，商户拥有普通 Pay 按钮。一个组件内部可以有多个安全 iframe；你不访问 frame DOM。
+
+#### 4.2.1 JavaScript
+
+```html
+<section id="checkout-root">
+<form>
+<div id="payment-element"></div>
+
+<button type="submit" data-action="pay" disabled>Pay</button>
+<button type="button" data-action="refresh" disabled>刷新结果</button>
+<button type="button" data-action="retry-same" disabled>恢复原提交</button>
+<button type="button" data-action="replace-session" disabled>重新进入付款</button>
+<p data-role="message" aria-live="polite"></p>
+</form>
+</section>
+```
+```javascript
+import { loadWalletPay } from "@walletpay/checkout-js";
+ import { requestCheckoutSession } from "./merchant-api.js";
+ import { bindCheckout } from "./bind-checkout.js";
+
+ export async function mountCheckout({ root, orderReference, csrfToken,
+   onReplaceSession, signal }) {
+   const setup = await requestCheckoutSession(orderReference, "embedded", csrfToken, signal);
+   const walletPay = await loadWalletPay({ publicKey: setup.publicKey });
+   if (signal?.aborted) return () => {};
+   const checkout = await walletPay.createCheckout({ clientSecret: setup.clientSecret });
+   if (signal?.aborted) { checkout.destroy(); return () => {}; }
+   const surface = checkout.createPaymentElement({
+     layout: "accordion", appearance: { theme: "light" },
+   });
+   const dispose = bindCheckout({ checkout, surface, root,
+     sessionId: setup.sessionId, onReplaceSession: () => onReplaceSession(setup.sessionId) });
+   surface.mount(root.querySelector("#payment-element"));
+   signal?.addEventListener("abort", dispose, { once: true });
+   return () => { signal?.removeEventListener("abort", dispose); dispose(); };
+ }
+```
+
+#### 4.2.2 React
+
+setup 由商户后端返回。进入付款时用 requestCheckoutSession(orderReference, "embedded", csrfToken) 获取它，传入组件；不在 render 时创建 Session 或调用 confirm。
+
+```jsx
 import {
-  WalletPayProvider,
-  CheckoutProvider,
-  PaymentElement,
-  useCheckout,
+  WalletPayProvider, CheckoutProvider, PaymentElement,
 } from "@walletpay/react";
+import { CheckoutForm } from "./CheckoutForm.jsx";
 
-function CheckoutForm() {
-  const { confirm, on } = useCheckout();
-  const [payEnabled, setPayEnabled] = useState(false);
-
-  // 银行验证 / 跳转期间锁住界面（与 4.2 相同）
-  useEffect(() => {
-    const off1 = on("actionstart", ({ type }) => disableCheckoutNavigation(type));
-    const off2 = on("actionend", ({ type, outcome }) =>
-      restoreCheckoutNavigation(type, outcome),
-    );
-    return () => {
-      off1();
-      off2();
-    };
-  }, [on]);
-
-  return (
-    <>
-      <PaymentElement
-        options={{ layout: "accordion" }}
-        onReady={() => setFormEnabled(true)}
-        onChange={({ complete }) => setPayEnabled(complete)}
-        onLoadError={({ code, requestId }) => showIntegrationError(code, requestId)}
-      />
-      <button
-        type="submit"
-        disabled={!payEnabled}
-        onClick={async () => {
-          // 3DS 跳转场景下响应会带跳转 URL，SDK 自动跳转
-          const result = await confirm({
-            returnUrl: "https://shop.example/payments/return",
-          });
-          switch (result.status) {
-            case "authorized":
-              showAuthorizedState(result.capture);
-              break;
-            case "captured":
-              showPaymentReceived();
-              break;
-            case "processing":
-              showProcessingState();
-              break;
-            case "failed":
-              showPaymentError(result.error);
-              break;
-          }
-        }}
-      >
-        Pay
-      </button>
-    </>
-  );
-}
-
-export function CheckoutPage({ publicKey, clientSecret }: Props) {
-  return (
-    <WalletPayProvider publicKey={publicKey}>
-      <CheckoutProvider clientSecret={clientSecret}>
-        <CheckoutForm />
-      </CheckoutProvider>
-    </WalletPayProvider>
-  );
+export function EmbeddedPay({ setup, onReplaceSession }) {
+  return <WalletPayProvider key={setup.publicKey} publicKey={setup.publicKey}>
+    <CheckoutProvider key={setup.sessionId} clientSecret={setup.clientSecret}>
+      <CheckoutForm key={setup.sessionId} sessionId={setup.sessionId}
+        onReplaceSession={onReplaceSession}>
+        <PaymentElement options={{
+          layout: "accordion", appearance: { theme: "light" },
+        }} />
+      </CheckoutForm>
+    </CheckoutProvider>
+  </WalletPayProvider>;
 }
 ```
 
-Pay 按钮由**你**拥有。这样你可以协调“同意条款”、表单校验等周边逻辑。组件内部的支付方式专属按钮（如钱包按钮）由 SDK 管理。React 绑定自动在卸载时销毁 frame 与监听（等价 `destroy()`）；Strict Mode 重放不会重复建会话或 attempt。两种写法行为一致。
+Provider／Element 自动创建、挂载与销毁 JS 核心。Session ID 或公钥变化时 key 触发旧上下文销毁与替换，避免把旧交易 UI 混入新订单。
 
-### 4.4 组件事件一览
+### 4.3 C：独立 Hosted Fields
 
-| 事件 | 什么时候触发 | 你该做什么 |
-| --- | --- | --- |
-| `ready` | 组件可以接受输入 | 启用表单 |
-| `change` | 填写完整性、校验、所选支付方式变化 | 联动 Pay 按钮（见 4.2 代码） |
-| `focus` / `blur` | 焦点进入 / 离开输入框 | 可选。做界面联动 |
-| `loaderror` | 组件初始化或加载失败 | 显示集成错误（带 `code` 和 `requestId`） |
-| `actionstart` | 银行验证 / 跳转开始 | 锁住导航和重复提交 |
-| `actionend` | 银行验证 / 跳转结束 | 恢复界面 |
+后端创建 fields Session，返回与 B 相同的接入参数。你排列三字段容器，SDK 统一管理安全输入和采集；confirm 仍针对整个字段组，不是三个付款。
 
-注意两点：
+#### 4.3.1 JavaScript
 
-1. **没有 `paymentSucceeded` 事件。** 这是刻意的。浏览器事件只是界面信号。
-2. `actionend` 可能永远不来（买家在银行页面直接关了浏览器）。界面恢复尽力而为，正确性靠 §5 和 §6。
+```html
+<section id="checkout-root">
+<form>
+<div>卡号</div><div id="card-number"></div>
+<div>有效期</div><div id="card-expiry"></div>
+<div>安全码</div><div id="card-cvc"></div>
 
-### 4.5 confirm() 的返回值
+<button type="submit" data-action="pay" disabled>Pay</button>
+<button type="button" data-action="refresh" disabled>刷新结果</button>
+<button type="button" data-action="retry-same" disabled>恢复原提交</button>
+<button type="button" data-action="replace-session" disabled>重新进入付款</button>
+<p data-role="message" aria-live="polite"></p>
+</form>
+</section>
+```
+```javascript
+import { loadWalletPay } from "@walletpay/checkout-js";
+ import { requestCheckoutSession } from "./merchant-api.js";
+ import { bindCheckout } from "./bind-checkout.js";
 
-```ts
-type ConfirmResult =
-  | { status: "authorized"; paymentId: string; capture: "manual" | "pending" | "failed" }
-  | { status: "captured"; paymentId: string }
-  | { status: "processing"; paymentId?: string; reason: "pending_method" | "unknown_outcome" }
-  | { status: "failed"; paymentId?: string; error: PaymentError };
+ export async function mountCheckout({ root, orderReference, csrfToken,
+   onReplaceSession, signal }) {
+   const setup = await requestCheckoutSession(orderReference, "fields", csrfToken, signal);
+   const walletPay = await loadWalletPay({ publicKey: setup.publicKey });
+   if (signal?.aborted) return () => {};
+   const checkout = await walletPay.createCheckout({ clientSecret: setup.clientSecret });
+   if (signal?.aborted) { checkout.destroy(); return () => {}; }
+   const surface = checkout.createCardFields({
+     appearance: { theme: "light" },
+     accessibility: { labels: { number: "卡号", expiry: "有效期", cvc: "安全码" } },
+   });
+   const dispose = bindCheckout({ checkout, surface, root,
+     sessionId: setup.sessionId, onReplaceSession: () => onReplaceSession(setup.sessionId) });
+   surface.mount({ number: root.querySelector("#card-number"),
+     expiry: root.querySelector("#card-expiry"), cvc: root.querySelector("#card-cvc") });
+   signal?.addEventListener("abort", dispose, { once: true });
+   return () => { signal?.removeEventListener("abort", dispose); dispose(); };
+ }
 ```
 
-### 4.6 错误码对照
+#### 4.3.2 React
 
-| 错误码 | 什么意思 | 你该做什么 |
+setup 对应 fields Session。CardFields 是统一字段组，三个 Field 组件是挂载点；缺少或重复字段是配置错误，全部初始化后组才 ready。
+
+```jsx
+import {
+  WalletPayProvider, CheckoutProvider, CardFields,
+  CardNumberField, CardExpiryField, CardCvcField,
+} from "@walletpay/react";
+import { CheckoutForm } from "./CheckoutForm.jsx";
+
+export function CustomCardPay({ setup, onReplaceSession }) {
+  return <WalletPayProvider key={setup.publicKey} publicKey={setup.publicKey}>
+    <CheckoutProvider key={setup.sessionId} clientSecret={setup.clientSecret}>
+      <CheckoutForm key={setup.sessionId} sessionId={setup.sessionId}
+        onReplaceSession={onReplaceSession}>
+        <CardFields options={{ appearance: { theme: "light" } }}>
+          <div className="field-label">卡号</div>
+          <CardNumberField ariaLabel="卡号" />
+          <div className="card-row">
+            <div>
+              <div className="field-label">有效期</div>
+              <CardExpiryField ariaLabel="有效期" />
+            </div>
+            <div>
+              <div className="field-label">安全码</div>
+              <CardCvcField ariaLabel="安全码" />
+            </div>
+          </div>
+        </CardFields>
+      </CheckoutForm>
+    </CheckoutProvider>
+  </WalletPayProvider>;
+}
+```
+
+商户 JSX 只排列挂载点，不接收原始卡值。CardFields 绑定连接到同一个 JS 字段组，将状态统一投影到 useCheckout；一次 confirm 采集整个组并编排 3DS。
+
+### 4.4 银行验证：前端交互，后端确认
+
+3DS 是银行验证持卡人的步骤，认证通过后付款仍可能被拒绝。你仍调用同一个 `confirm()`，无需直接接 Worldpay，也无需获取其后台凭证。
+
+以 Access Worldpay Web 接口为例，它不是纯前端或纯后端流程：
+
+| 环节 | 谁执行 | 你的商户代码需要做什么 |
 | --- | --- | --- |
-| `invalid_configuration` | 集成配置有错 | 核对公钥、环境、`return_url` 配置 |
-| `session_expired` | 会话过期 | 回到第 1 步创建新会话 |
-| `validation_failed` | 买家填写不完整或不合法 | 让买家修正输入 |
-| `authentication_failed` | 银行验证失败 | 提示买家重试或换卡 |
-| `payment_declined` | 银行拒绝付款 | 提示买家换支付方式。这不是你的代码问题 |
-| `capture_failed` | 授权成功但扣款失败 | 订单标异常，走人工处理 |
-| `action_canceled` | 买家主动取消验证 | 引导买家重新付款 |
-| `popup_blocked` | 浏览器拦截了弹窗 | 提示买家允许弹窗后重试 |
-| `network_error` | 网络问题 | 允许重试 |
-| `unknown_outcome` | 结果未知 | 显示“处理中”，等 webhook。**不要报失败** |
+| 初始化设备采集与请求认证 | 支付平台后端调用 Worldpay | 无专属代码 |
+| 浏览器设备采集与银行挑战 | 平台 SDK、受控 iframe、银行页面 | 保持支付组件挂载，显示验证提示 |
+| 挑战完成回流 | Worldpay／银行挑战流程自动驱动浏览器 POST 到支付平台后端 | 无需发起或接收该表单 |
+| 查证认证结果并继续付款 | 支付平台后端调用 Worldpay | 不把验证完成当付款成功 |
+| 展示支付结果 | SDK 返回或通过你的订单结果接口 | 显示处理中／成功／失败 |
+| 更新订单与履约 | 你的后端处理签名 webhook 或认证查询 | 与 §5、§6 共用幂等处理 |
 
-## 5. 第 3 步：处理跳转回来的买家
+#### 挑战 URL 怎样流转
 
-### 5.1 场景
+Worldpay 将 challenge URL 和 JWT 返回给支付平台后端。SDK 加载支付平台的受控页面，该页面在浏览器里用表单 POST 启动银行挑战。
 
-3DS 验证或某些支付方式会把买家带去银行页面，完成后跳回你配置的 `return_url`。
+你不需要把 challenge URL 放进 iframe，也不应直接导航到它。它是 POST 目标，不是简单的 iframe GET 地址。原始 JWT 和认证值不交给你的业务代码；它们在平台控制的浏览器页面或后端之间使用。[W1]
 
-### 5.2 URL 上没有“成功”参数
+#### 两个返回地址不要混淆
 
-跳回的 URL 只有一个**不透明引用**：
+| 地址 | 谁管理 | 用途 |
+| --- | --- | --- |
+| Worldpay `challenge.returnUrl` | 支付平台后端设置和接收 | 挑战流程自动驱动浏览器 POST 回支付平台，触发后端查证 |
+| 你创建 Session 时的 `return_url` | 你的后端 | SDK 整页交互结束后带买家回商城，由你的后端查询订单结果 |
+
+内嵌验证结束通常仍留在你的结账页，不需要整页跳回。整页／银行 App 模式下原页面可能销毁，`confirm()` Promise 不保证返回，结果仍用 §5 和 §6 恢复。
+
+#### 谁负责 POST，商户是否需要写代码
+
+**不需要。`challenge.returnUrl` 是支付平台自己的后端 URL，你无需配置它，也无需在前端 POST 到它。** 你只配置创建 Session 时的商城 `return_url`。
+
+这里有两次不同的表单提交：
+
+1. **启动挑战**：支付平台 SDK／托管页面在买家浏览器中提交 JWT 表单，打开银行验证界面。这部分由支付平台实现。
+2. **挑战结束回流**：Worldpay／银行挑战流程自动驱动买家浏览器，向平台预先设置的 `challenge.returnUrl` POST。商户不实现这次提交，SDK 也不需要手工模拟它。[W1]
+
+支付平台后端接收回流，查证认证结果并继续付款；平台提供的回流页面脚本通知 SDK 恢复界面，SDK 查询支付状态。你只需按 §5、§6 查询订单结果和接收平台签名 webhook。
+
+“自动回流”要求浏览器正常完成挑战；在回流前关页可能导致平台尚未收到该请求。因此不能把自动回流理解成必达的后台通知。
+
+如果阅读 Worldpay 官方文档看到“your backend”，它指直接接入 Worldpay 的一方。在本接入方案里是支付平台，不是你的商城后端。
+
+#### 支付平台如何知道验证结果
+
+挑战完成的浏览器 POST 只提供关联信息，不是付款成功证据。平台后端再调用 Worldpay 的 verification，取得认证结果，然后请求支付授权；若采用 Integrated 3DS，平台后端调用原支付的完成 action 继续流程。两种模式都不会要求你的浏览器直接调用 Worldpay 后台 API。[W1][W2]
+
+```mermaid
+sequenceDiagram
+    participant B as 买家浏览器与 SDK
+    participant P as 支付平台后端
+    participant W as Worldpay
+    participant M as 你的后端
+    P->>W: 请求认证／支付流程
+    W-->>P: 需要银行挑战
+    P-->>B: SDK 挑战指令
+    B->>W: 浏览器表单 POST，完成验证
+    W-->>B: 挑战流程自动驱动浏览器回流
+    B->>P: 自动 POST 到支付平台 challenge.returnUrl
+    P->>W: 后端 verify 或完成支付 action
+    W-->>P: 认证／支付续接结果
+    opt 独立 3DS 模式
+        P->>W: 携带认证结果请求授权
+        W-->>P: 授权结果
+    end
+    P-->>B: SDK 展示状态（页面存活时）
+    P->>M: 签名 webhook：支付结果
+    B->>M: 查询自己的订单结果
+    M->>P: 后端权威查询
+    P-->>M: 真实支付事实
+```
+
+这里 Worldpay 汇总其浏览器服务和后台 API；浏览器和后端的职责已在每条调用中标明。Webhook 是支付平台主动发送给你的后端，与浏览器挑战回流是两条不同的信息流。
+
+#### 事件、关页与过期
+
+- `actionstart` 表示开始银行交互，`actionend` 表示交互结束；两者都不能授权发货。
+- 关闭验证框或浏览器后，先查订单状态，不直接报告付款失败，也不引导再付一次。
+- Session 过期不取消已经开始的 Transaction；SDK 管理本平台续接，但不能延长银行／通道挑战的期限。
+- 浏览器回流已经到达平台后端后，后续查证可以后台继续；若在回流前关页，则可能仍未完成，不能承诺一定继续付款成功。
+- 显示“处理中”时等待后端结果；若 SDK 要求恢复交互，按其明确指令操作，不新建第二笔未决付款。
+
+以上是 SDK 的内部实现说明。商户只实现标准接入、订单结果接口和 webhook，不接触 Worldpay challenge 表单、verify 或 complete3dsChallenge 接口。
+
+### 4.5 实例与重建
+
+`requestCheckoutSession` 是你自己请求后端的辅助函数；SDK 的 createCheckout 只绑定已有 Session。普通 render、重新挂载和创建字段都不新建平台交易。
+
+onReplaceSession 是父页面提供的回调：携带原 Session 引用调用你自己的后端，后端查证并停止旧入口、认领新创建代次，再由父页面销毁旧上下文并传入新 setup。未知结果不直接换入口再扣款；新确认仍受平台 Order 级限制。
+
+JS 调用 mountCheckout 时传入路由 AbortSignal；异步初始化晚到时不挂回旧路由。React 按 Session ID／公钥替换 Provider，绑定自动清理所属字段；商户的恢复 flow 在 effect 中创建和清理。
+
+unmount 只移除输入呈现并清空敏感输入，允许有效实例重挂并重新 ready；destroy 幂等销毁整个实例，不可重挂。二者都不取消后台支付。
+
+## 5. 第三步：结果查询与返回页
+
+### 5.1 返回地址只提供查询引用
 
 ```text
-https://shop.example/payments/return?checkout_session=cs_01J...
+https://shop.example/payments/return?checkout_session=cs_example
 ```
 
-没有 `success=true`，这是刻意的：URL 可以被伪造、被收藏、被转发，任何页面上的“成功”字样都不算数。要拿真实结果，必须问你的后端。
+引用说明“查哪一笔”，不说明是否成功，也不证明访问者身份。不要相信 URL 中自造的 `success=true` 或金额。
 
-### 5.3 代码
+返回页和原结账页都可以调用同一个商户结果接口。游客也必须通过你自己的受保护结账会话校验；银行 App 返回后身份丢失，应先恢复买家身份，不能只凭 Session ID 展示订单。
 
-浏览器侧只取引用，然后问自己的后端：
+### 5.2 后端结果接口：查整个订单，不只查当前会话
 
-```ts
-// /payments/return（浏览器）
-const ref = new URLSearchParams(location.search).get("checkout_session");
-const res = await fetch(`/api/checkout/result?session=${encodeURIComponent(ref)}`, {
-  credentials: "include", // 带买家会话，供后端确认“你是谁”
-});
-renderResult(await res.json());
-```
+先用已保存的 Session 绑定检查买家／游客归属，再调用平台查询。平台会话查询需要包含 Order 级 order_payment 汇总：即使本 Session 没有交易，旧 Session 的在途付款也可能仍然存在。
 
-后端用私密钥查平台，并确认这个买家只能看到自己的订单：
-
-```ts
-// server/result.ts
+```javascript
 app.get("/api/checkout/result", async (req, res) => {
-  const buyer = await authenticateBuyer(req); // 你自己的买家/游客鉴权
-  const session = await walletpay.checkoutSessions.retrieve(req.query.session);
-
-  // 订单从会话的固定绑定推导。浏览器提交的订单号不算数。
-  const order = await loadOrder(session.merchant_order_reference, session.order_version);
-  if (!order || order.buyerId !== buyer.id) {
-    return res.status(404).end(); // 不泄露任何跨订单数据
-  }
-
-  const payment = session.payment_id
-    ? await walletpay.payments.retrieve(session.payment_id)
-    : null;
-  res.json({
-    status: payment?.status ?? session.payment_status,
-    capture: payment?.capture,
-  });
+  const buyer = await authenticateBuyerOrGuest(req);
+  const binding = await loadOwnedCheckoutBinding(buyer, req.query.session);
+  if (!binding) return res.status(404).end();
+  const session = await walletpay.checkoutSessions.retrieve(binding.sessionId);
+  await validatePlatformBinding(binding, session);
+  // 使用 Order 汇总，验证相关交易的实际订单版本和金额。
+  await applyVerifiedOrderPayment(binding, session.order_payment);
+  const status = await buildBuyerPaymentStatus(binding, session);
+  res.set("Cache-Control", "no-store");
+  res.json(status);
 });
 ```
 
-结果的展示与 webhook 用**同一个**订单更新函数。谁先到就先执行，效果只生效一次。
+辅助函数由商户实现。buildBuyerPaymentStatus 按 §7.1 的结构返回；旧版本付款不自动满足新版本，nextAction 必须使用平台事实和履约政策保守推导。不存在与无权访问均用相同 404。
 
-## 6. 第 4 步：接收 webhook 通知
-
-### 6.1 为什么必须做
-
-买家可能付完钱直接关页面。也可能整个过程都在银行 App 里完成，浏览器根本没回来。webhook 是平台**主动 POST 到你的服务器**的支付结果，也是唯一必达的路径。
-
-平台后台会给你一个**签名密钥**（webhook secret）。它和私密钥不同，专门用来验证“这条消息真的来自平台”。
-
-### 6.2 代码
-
-硬性顺序：**验签 → 落库 → 应答 → 幂等处理**。
+### 5.3 返回页示例
 
 ```ts
-// server/webhook.ts —— 必须用原始 body 验签，不能先 JSON 解析
-import crypto from "node:crypto";
+const sessionId = new URLSearchParams(location.search).get("checkout_session");
+if (!sessionId) {
+  showMissingCheckoutReference();
+} else {
+  const response = await fetch(
+    `/api/checkout/result?session=${encodeURIComponent(sessionId)}`,
+    { credentials: "include", cache: "no-store" },
+  );
+  if (!response.ok) showResultAccessError(response.status);
+  else renderOrderResult(await response.json());
+}
+```
 
+接口未决时显示“处理中”，有限轮询或引导查看订单。无论等待多久，浏览器超时都不等于付款失败。
+
+## 6. 第四步：接收 webhook
+
+### 6.1 Webhook 是后台通知
+
+买家可能付完就关闭页面，因此必须接收平台发送到后端的事件。投递会重试，可能重复或乱序。Webhook 是主要异步通知路径；你仍需要查询和对账补偿，不能假设网络和端点永远可用。
+
+处理顺序：**验签 → 持久化事件 → 应答 → 后台幂等处理**。
+
+### 6.2 验签与持久化示例
+
+下面是拟定签名格式：`HMAC-SHA256(secret, timestamp + "." + rawBody)`。事件体包含签名覆盖的 `id`；若同时有 Event-Id 头，必须与体内 ID 一致。正式签名格式以发布契约为准。
+
+```ts
+import crypto from "node:crypto";
+import express from "express";
+
+// 该路由必须在会修改 body 的全局 JSON parser 之前注册。
 app.post(
   "/api/walletpay-webhook",
-  express.raw({ type: "application/json" }),
+  express.raw({ type: "application/json", limit: "1mb" }),
   async (req, res) => {
-    const eventId = req.get("WalletPay-Event-Id");
-    const timestamp = req.get("WalletPay-Timestamp");
+    const timestamp = req.get("WalletPay-Timestamp") ?? "";
     const signature = req.get("WalletPay-Signature") ?? "";
+    if (!/^\d+$/.test(timestamp) || !/^v1=[0-9a-f]{64}$/.test(signature)) {
+      return res.status(400).end();
+    }
+    const seconds = Number(timestamp);
+    if (!Number.isSafeInteger(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) {
+      return res.status(400).end();
+    }
     const rawBody = req.body;
-
-    // 1) 新鲜度：拒绝过期时间戳，防重放
-    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
+    if (!Buffer.isBuffer(rawBody)) return res.status(400).end();
+    const expected = crypto.createHmac(
+      "sha256", process.env.WALLETPAY_WEBHOOK_SECRET!,
+    ).update(`${timestamp}.`).update(rawBody).digest();
+    const received = Buffer.from(signature.slice(3), "hex");
+    if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
       return res.status(400).end();
     }
 
-    // 2) 验签：HMAC-SHA256(签名密钥, `${timestamp}.${rawBody}`)
-    const expected =
-      "v1=" +
-      crypto
-        .createHmac("sha256", process.env.WALLETPAY_WEBHOOK_SECRET!)
-        .update(`${timestamp}.`)
-        .update(rawBody)
-        .digest("hex");
-    const valid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expected),
-    );
-    if (!valid) return res.status(400).end();
+    let event;
+    try { event = parseAndValidateWalletPayEvent(rawBody); }
+    catch { return res.status(400).end(); }
+    const headerId = req.get("WalletPay-Event-Id");
+    if (headerId && headerId !== event.id) return res.status(400).end();
 
-    // 3) 先落库，再应答；按 event_id 去重
-    const event = JSON.parse(rawBody.toString());
-    const isNew = await db.insertEventIfNew(eventId, event);
+    // 事务落库；事件 ID 唯一，worker 可扫描所有 pending inbox 记录。
+    // 失败则返回非 2xx，不能在事件未保存时应答成功。
+    await inbox.persistIfNew(event.id, event);
     res.status(200).end();
-
-    // 4) 业务效果幂等应用。与第 5 步的查询共用同一个函数。
-    if (isNew) await applyOrderEffectsOnce(event);
   },
 );
 ```
 
-### 6.3 事件信封与投递语义
+这个示例覆盖格式检查、时间戳、原始 body 和长度检查。生产实现还需要按正式 SDK 处理密钥轮换、完整事件 schema 和可观测性。
 
-每个请求带三个头：
+### 6.3 后台订单处理
 
-| 头 | 含义 |
-| --- | --- |
-| `WalletPay-Event-Id` | 事件 ID。你用它去重 |
-| `WalletPay-Timestamp` | 发送时间。你用它防重放 |
-| `WalletPay-Signature` | `v1=<hmac>` 签名 |
+字段校验失败、组件加载失败或按钮点击不是支付事件；只有平台持久化的交易状态变化才进入支付 webhook。
 
-平台发给你的事件有四类：授权成功、扣款成功、处理中出结果、失败。每类都带支付 ID 和订单关联，你的处理函数据此更新订单。
+Worker 从持久 inbox 读取事件，验证订单关联与支付事实，调用与查询共用的 `applyVerifiedPaymentToOrder`，成功后标记处理完成；失败保留待重试。实现应具有崩溃恢复能力，不能只在 HTTP 应答后临时执行一个函数。
 
-投递语义三条：
+两层去重都需要：事件 ID 防止重复消费同一事件；订单更新和履约效果的唯一约束防止不同事件、查询与 webhook 同时触发重复发货。
 
-1. **至少一次。** 收到重复事件是正常的。靠 `event_id` 去重。
-2. **不保证顺序。** “成功”可能比“处理中”先到。处理函数以事件里的最终状态为准，不要按到达顺序做状态机。
-3. **失败会重试。** 你的端点暂时不可用不会丢事件。但请注意：重试期间同一事件可能送达多次。
+乱序事件不能把已请款订单覆盖成处理中。失败事件要对应具体 Transaction，不能因旧失败尝试的迟到通知把已成功订单标为失败。事件格式尚待定稿，商户应用以权威状态和允许转换为准。
 
-webhook 端点配置在**商户/环境**级（平台后台登记）。不支持为单个订单指定回调地址。
+## 7. 结果、异常与恢复代码
 
-## 7. 3DS 流程详解与结果异常
+### 7.1 如何决定下一步
 
-两种流程的时序见 §1.2 与 §1.3。那里的 3DS 折叠为一步。这一章展开 3DS：谁实现它、流程长什么样、结果怎么读、异常怎么办。
+浏览器确认结果用于 UI；更新订单和履约仍依据你的后端查询／签名 webhook。captured 是已请款，不是已到可提现余额；authorized 的 manual／pending／failed 分别表示等待请款、请款未决、请款失败，三者都不能另付。
 
-### 7.1 3DS 流程（单独呈现）
-
-**3DS 要我实现吗？** 不要。3DS 的验证流程由 PaymentElement 内部实现：平台 SDK 负责呈现验证框和执行跳转，平台后端负责与银行 / 3DS 体系对接。你没有 3DS 专属代码。
-
-你只有三件相关的事：
-
-1. 可选：监听 `actionstart` / `actionend`（§4.4）做界面协调，如锁导航、显示加载。
-2. 必做：跳转回流页（§5）与 webhook（§6）收口。跳转会销毁页面上下文。
-3. 不要做：不处理验证数据、不自己拼跳转 URL、不把“验证通过”当“支付成功”。
-
-银行验证的内部流程如下。你的代码只有一个 `confirm()`。
-
-```mermaid
-sequenceDiagram
-    actor Buyer as 买家
-    participant Page as 你的网页
-    participant Server as 你的服务器
-    participant Pay as 支付平台
-    participant Bank as 银行
-
-    Buyer->>Page: 填卡，点 Pay
-    Page->>Pay: confirm()
-    Pay->>Bank: 请求授权
-    Bank-->>Pay: 需要验证持卡人
-    alt 弹窗 / 内嵌验证框
-        Pay-->>Page: confirm() 响应：验证框（SDK 呈现）
-        Buyer->>Bank: 输入验证码
-    else 整页跳转 / 银行 App
-        Pay-->>Page: confirm() 响应：跳转 URL（发卡行验证页）
-        Page->>Bank: 浏览器跳转到发卡行验证页
-        Buyer->>Bank: 在银行页面或银行 App 完成验证
-    end
-    Bank-->>Pay: 验证结果
-    Pay->>Bank: 继续同一笔授权
-    Bank-->>Pay: 授权结果
-    alt 浏览器还活着
-        Pay-->>Page: captured 或 authorized
-    else 已跳转离开
-        Note over Page: 跳转指令已随 confirm() 响应下发。<br/>支付结果不从 confirm() 回来，这是正常的。
-    end
-    Pay-->>Server: webhook：最终结果（必达）
-    Server->>Server: 更新订单
-    opt 买家跳回你的页面
-        Buyer->>Page: 跳转回来
-        Page->>Server: 查询权威结果
-    end
-```
-
-### 7.2 3DS 的四种呈现方式
-
-银行验证长什么样由银行决定，不影响你的代码。四种方式下的买家体验：
-
-| 方式 | 买家看到什么 | 对你的影响 |
-| --- | --- | --- |
-| 免打扰 (frictionless) | 无感知，直接出结果 | 无 |
-| 内嵌 / 弹窗挑战 | 组件里弹出银行验证框 | `actionstart`/`actionend` 会触发 |
-| 整页跳转 | 跳去银行页面再跳回 | `confirm()` 响应带跳转 URL，浏览器自动跳转；页面会销毁，结果靠 §5、§6 |
-| 银行 App 跳转 | 拉起银行 App，回来后可能落在浏览器外 | 同上。手机上最常见 |
-
-**关于“跳转”的澄清**：整页跳转会替换**整个页面**（地址栏都变），而不是在组件那个框里换内容。div 里只能内嵌显示验证框；发卡行常禁止自己的页面被嵌入（`X-Frame-Options`），所以才需要跳转或弹窗。跳转由 SDK 执行（`confirm()` 响应带回跳转 URL），会先触发 `actionstart`（type: `"redirect"`）让你锁界面；跳转后页面销毁，结果靠 §5、§6。弹窗必须发生在买家点 Pay 的手势里，否则被浏览器拦截（`popup_blocked`）。如果你的页面结构不接受整页跳转，可在配置里只启用内嵌 / 弹窗模式。
+你的后端结果接口返回以下拟定投影，不直接复制通道原始状态：
 
 ```ts
-// 你唯一要写的“跳转相关”代码就是这个事件处理（4.2 里也有）：
-checkout.on("actionstart", ({ type }) => {
-  if (type === "redirect") disableCheckoutNavigation(); // 马上要整页跳转，锁住界面
-});
-// 跳转本身由 SDK 执行，你不需要、也无法在 div 里“局部跳转”
+type BuyerPaymentStatus = {
+  paymentStatus: "unpaid" | "processing" | "authorized" | "captured" | "failed";
+  sessionStatus: "open" | "expired" | "replaced" | "completed";
+  orderVersionMatches: boolean;
+  submissionResolved: boolean;
+  nextAction: "wait" | "retry_attempt" | "replace_session" | "stop";
+  transactionId?: string;
+  capture?: "manual" | "pending" | "failed";
+};
 ```
 
-### 7.3 结果怎么读
+submissionResolved 表示服务端已知提交没有未决动作，并不证明网络中没有迟到请求。首次未提交入口可以可用；提交后必须匹配本次已知 Transaction ID，不能用同 Order 旧失败或单次 unpaid 解锁。提交后断网，即使查询暂为 unpaid，也不能立即引导买家再付。后台确认可再付后，前端恢复 Pay；查询失败或超时保持等待。
 
-| 你收到的状态 | 含义 | 你该做什么 |
-| --- | --- | --- |
-| `captured` | 已授权且已扣款 | 按你的政策发货 |
-| `authorized` + `capture: "manual"` | 已授权、未扣款 | 发货前用管理接口请款 |
-| `authorized` + `capture: "pending"` | 已扣款但平台还在重试 | 等 webhook 更新 |
-| `authorized` + `capture: "failed"` | 授权成功但扣款失败 | 订单标异常，人工处理 |
-| `processing` | 还没有定论 | 显示“处理中”，等 webhook。不要报失败 |
-| `failed` | 明确失败 | 按错误码提示买家重试或换支付方式 |
-
-两条提醒：
-
-- **“验证通过”不等于“付款成功”。** 银行验证只能证明持卡人本人，之后授权仍可能被拒（余额不足等）。
-- **“已授权”是否足够发货，是你自己的业务决策。** 平台不替你决定。多数商户以“已扣款”为发货依据。
-
-### 7.4 异常情况对照表
-
-| 情况 | 平台行为 | 你该做什么 |
-| --- | --- | --- |
-| 买家验证失败 | 结束本次付款，错误 `authentication_failed` | 策略允许时让买家重试 |
-| 买家取消 / 关闭验证框 | 尽力返回 `action_canceled`；不确定时转“处理中” | 显示“处理中”，等 webhook。不要断言失败 |
-| 弹窗被浏览器拦截 | 返回 `popup_blocked` | 提示允许弹窗，或改用跳转方式 |
-| 验证期间浏览器被关闭 | 付款在平台侧继续 | 等 webhook。订单不要标失败 |
-| 浏览器先回来、webhook 还没到 | 查询结果是“处理中” | 显示“处理中”，收到 webhook 再更新 |
-| webhook 先到、浏览器还没回 | 正常 | 正常处理 webhook |
-| 验证通过但授权被拒 | 错误 `payment_declined` | 提示买家换支付方式 |
-| 授权成功但扣款失败 | `authorized` + `capture: failed` | 订单标异常，人工处理 |
-| 验证后网络超时 | 结果未知 | 等 webhook。禁止引导买家重复付款 |
-| 会话在验证期间过期 | 已提交的付款继续跟踪 | 接受迟到的合法结果 |
-| 验证期间购物车变化 | 不改在途金额 | 按迟到付款政策处理（如缺货退款）。**不要发起第二笔扣款** |
-
-## 8. 不要做的事
-
-- 不要把私密钥放进前端代码、移动端安装包或 Git 仓库。
-- 不要把 `client_secret` 放进 URL、日志、埋点或客服截图。
-- 不要从按钮点击或浏览器回调推断支付成功。以后端结果为准。
-- 不要修改已创建会话的金额。创建新会话。
-- 不要在 webhook 里先应答后处理。
-- 不要假设 webhook 不重复、不乱序。
-- 不要自己收集卡号或 CVV。组件之外没有卡号。
-- 不要依赖 `confirm()` 的 Promise 一定返回。跳转会销毁页面。
-- 不要在结果未知时引导买家再付一次。等 webhook。
-
-## 9. 术语表
-
-### 9.1 通用术语
-
-| 术语 | 含义 |
+| recovery | 商户下一步 |
 | --- | --- |
-| 私密钥 | `sk_` 开头的服务端密钥。代表商户身份 |
-| 公钥 | `pk_` 开头的公开标识。不授权任何操作 |
-| 会话能力凭证 | `client_secret`。一笔订单的“一次性门票” |
-| 支付授权 | 银行批准并冻结金额 |
-| 请款 | 真正划走金额 |
-| 结算 | 资金进入你的可提现余额 |
-| 3DS | 银行对持卡人的身份验证 |
-| webhook | 平台主动发到你服务器的支付结果通知 |
-| 幂等 | 同一操作执行多次，效果与执行一次相同 |
+| correct_input | 修正未受理的输入校验问题 |
+| retry_same_operation | 用 SDK retryConfirmation 恢复原提交键，不调用新 confirm |
+| new_attempt | 查证 Order，nextAction 为 retry_attempt 才恢复 Pay |
+| new_session | 查证后重建 Session，并替换组件上下文 |
+| query_status | 刷新订单结果，不新扣款 |
+| contact_support | 停止提交，显示人可理解的提示 |
 
-### 9.2 金额与费用术语（对账时会遇到）
+retryConfirmation 是拟定 SDK 恢复方法，只恢复当前实例已经保存的提交关联。凭证过期／页面丢失时转后端查询，不自行生成新的提交键重试。配置错误、输入错误、会话过期和付款结果未知不能都显示成“处理中”。
 
-| 术语 | 含义 |
+### 7.2 三种方案共用的商户辅助代码
+
+以下文件由商户实现。JS 与 React 使用同一恢复状态逻辑；没有新增第二套支付流程。所有字段命名与内部设计一致。
+
+#### 7.2.1 merchant-api.js：请求入口与订单结果
+
+```javascript
+async function postCheckout(payload, csrfToken, signal) {
+  const response = await fetch("/api/checkout", {
+    method: "POST", credentials: "include", signal,
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error("创建付款入口失败");
+  return response.json();
+}
+
+export function requestCheckoutSession(orderReference, uiMode, csrfToken, signal) {
+  return postCheckout({ orderReference, uiMode }, csrfToken, signal);
+}
+
+export function replaceCheckoutSession(replaceSessionId, orderReference, uiMode, csrfToken, signal) {
+  return postCheckout({ replaceSessionId, orderReference, uiMode }, csrfToken, signal);
+}
+
+export async function queryOrderStatus(sessionId, signal) {
+  const response = await fetch(
+    `/api/checkout/result?session=${encodeURIComponent(sessionId)}`,
+    { credentials: "include", cache: "no-store", signal },
+  );
+  if (!response.ok) throw new Error("暂时无法查询订单");
+  return response.json();
+}
+```
+
+#### 7.2.2 checkout-flow.js：统一确认和恢复
+
+初次也查询 Order 状态。示例提供手动刷新结果，你可增加有界轮询；界面等待超时不标付款失败。
+
+```javascript
+export function createPaymentFlow({ checkout, queryStatus, onReplaceSession }) {
+  let input = { ready: false, complete: false, loadError: null };
+  let phase = "waiting", message = "正在检查付款状态";
+  let busy = false, action = false, uncertain = false, disposed = false;
+  let canReplay = false;
+  let expectedTransactionId;
+  const abort = new AbortController();
+  const listeners = new Set();
+  let snapshot;
+
+  function emit() {
+    if (disposed) return;
+    if (input.loadError && !uncertain && phase === "editing") {
+      phase = "blocked"; message = "支付组件加载失败，请刷新页面或联系商户";
+    }
+    snapshot = {
+      phase, message,
+      canSubmit: phase === "editing" && input.ready && input.complete &&
+        !input.loadError && !busy && !action,
+      canRefresh: !busy && !action && ["waiting", "retry_same"].includes(phase),
+      canRetrySame: !busy && !action && canReplay,
+      canReplace: !busy && phase === "replace_session",
+    };
+    listeners.forEach((notify) => notify(snapshot));
+  }
+
+  function applyStatus(status) {
+    // 此结构由商户后端验证并投影，不信任页面上的支付状态。
+    if (status.orderVersionMatches !== true) {
+      phase = "blocked"; canReplay = false;
+      message = "订单已变更，请查看订单或联系商户";
+    } else if (["authorized", "captured"].includes(status.paymentStatus)) {
+      phase = status.paymentStatus; canReplay = false; uncertain = false;
+      message = phase === "captured" ? "付款已确认" : "已授权，等待商户处理";
+    } else if (status.paymentStatus === "processing") {
+      phase = "waiting"; message = "付款处理中，请稍后刷新";
+    } else if (status.nextAction === "stop") {
+      phase = "blocked"; canReplay = false;
+      message = "请查看订单或联系商户处理";
+    } else if (uncertain && ["unpaid", "failed"].includes(status.paymentStatus) &&
+      status.sessionStatus === "open" &&
+      (!expectedTransactionId || status.transactionId !== expectedTransactionId)) {
+      phase = "waiting";
+      message = "原提交尚未确认，请恢复原提交或稍后刷新";
+    } else if (status.nextAction === "retry_attempt" &&
+      status.sessionStatus === "open" && status.submissionResolved === true &&
+      ["unpaid", "failed"].includes(status.paymentStatus)) {
+      phase = "editing"; canReplay = false; uncertain = false;
+      message = "可以重新付款，请检查支付信息";
+    } else if (status.nextAction === "replace_session" &&
+      status.submissionResolved === true && ["unpaid", "failed"].includes(status.paymentStatus)) {
+      phase = "replace_session"; canReplay = false; uncertain = false;
+      message = "付款入口已失效，请重新进入付款";
+    } else {
+      // unpaid 不等于旧确认请求一定未受理。
+      phase = "waiting";
+      message = "结果尚未确认，请刷新或恢复原提交";
+    }
+  }
+
+  async function readStatus() {
+    try {
+      const status = await queryStatus(abort.signal);
+      if (!disposed) applyStatus(status);
+    } catch {
+      if (!disposed) {
+        phase = "waiting";
+        message = "暂时无法确认结果，请稍后刷新";
+      }
+    }
+  }
+
+  async function acceptResult(result) {
+    if (result.transactionId) expectedTransactionId = result.transactionId;
+    if (result.status !== "failed") {
+      phase = "waiting";
+      canReplay = result.status === "processing" && result.reason === "unknown_outcome";
+      // authorized／captured／processing 都再经商户后端确认。
+      await readStatus();
+      return;
+    }
+    switch (result.error.recovery) {
+      case "correct_input":
+        uncertain = false; canReplay = false; phase = "editing";
+        message = "请修正支付信息后再试";
+        break;
+      case "retry_same_operation":
+        phase = "retry_same"; message = "请恢复原提交，勿再次付款";
+        break;
+      case "new_attempt":
+      case "new_session":
+        uncertain = false; canReplay = false;
+        phase = "waiting"; await readStatus();
+        break;
+      case "query_status":
+        canReplay = false;
+        phase = "waiting"; await readStatus();
+        break;
+      case "contact_support":
+      default:
+        phase = "blocked"; canReplay = false;
+        message = "付款暂不可用，请联系商户";
+    }
+  }
+
+  async function run(replay) {
+    if (disposed || busy || action) return;
+    if (replay ? !snapshot.canRetrySame : !snapshot.canSubmit) return;
+    if (!replay) expectedTransactionId = undefined;
+    busy = true; uncertain = true; canReplay = true;
+    phase = "submitting"; message = "正在确认付款"; emit();
+    try {
+      const result = await (replay ? checkout.retryConfirmation() : checkout.confirm());
+      if (!disposed) await acceptResult(result);
+    } catch {
+      if (!disposed) { phase = "waiting"; await readStatus(); }
+    } finally {
+      busy = false; emit();
+    }
+  }
+
+  const off = [
+    checkout.on("actionstart", () => { action = true; emit(); }),
+    checkout.on("actionend", () => { action = false; emit(); }),
+  ];
+  emit();
+  return {
+    getState: () => snapshot,
+    subscribe(notify) { listeners.add(notify); notify(snapshot); return () => listeners.delete(notify); },
+    setInput(value) {
+      input = value;
+      if (input.loadError && !uncertain && phase === "editing") {
+        phase = "blocked"; message = "支付组件加载失败，请刷新页面或联系商户";
+      }
+      emit();
+    },
+    submit: () => run(false),
+    retrySame: () => run(true),
+    async refresh() {
+      if (disposed || !snapshot.canRefresh) return;
+      busy = true; emit();
+      await readStatus(); busy = false; emit();
+    },
+    async replaceSession() {
+      if (disposed || !snapshot.canReplace) return;
+      busy = true; emit();
+      try { await onReplaceSession(); }
+      catch {
+        if (!disposed) { phase = "waiting"; message = "入口更新失败，请刷新订单状态"; }
+      } finally { busy = false; emit(); }
+    },
+    dispose() { disposed = true; abort.abort(); off.forEach((unsubscribe) => unsubscribe()); listeners.clear(); },
+  };
+}
+```
+
+#### 7.2.3 bind-checkout.js：JavaScript DOM 接线
+
+```javascript
+import { createPaymentFlow } from "./checkout-flow.js";
+import { queryOrderStatus } from "./merchant-api.js";
+
+export function bindCheckout({ checkout, surface, sessionId, root, onReplaceSession }) {
+  const flow = createPaymentFlow({ checkout, onReplaceSession,
+    queryStatus: (signal) => queryOrderStatus(sessionId, signal),
+  });
+  const form = root.querySelector("form");
+  const pay = root.querySelector('[data-action="pay"]');
+  const refresh = root.querySelector('[data-action="refresh"]');
+  const retry = root.querySelector('[data-action="retry-same"]');
+  const replace = root.querySelector('[data-action="replace-session"]');
+  const message = root.querySelector('[data-role="message"]');
+  const input = { ready: false, complete: false, loadError: null };
+  const off = [
+    surface.on("ready", (state) => {
+      input.ready = true; input.complete = state.complete; flow.setInput({ ...input });
+    }),
+    surface.on("change", (state) => { input.complete = state.complete; flow.setInput({ ...input }); }),
+    surface.on("loaderror", (error) => { input.loadError = error; flow.setInput({ ...input }); }),
+    flow.subscribe((state) => {
+      pay.disabled = !state.canSubmit; refresh.disabled = !state.canRefresh;
+      retry.disabled = !state.canRetrySame; replace.disabled = !state.canReplace;
+      message.textContent = state.message;
+    }),
+  ];
+  const submit = (event) => { event.preventDefault(); void flow.submit(); };
+  const onRefresh = () => { void flow.refresh(); };
+  const onRetry = () => { void flow.retrySame(); };
+  const onReplace = () => { void flow.replaceSession(); };
+  form.addEventListener("submit", submit);
+  refresh.addEventListener("click", onRefresh);
+  retry.addEventListener("click", onRetry);
+  replace.addEventListener("click", onReplace);
+  void flow.refresh(); // 初次也查询 Order 级状态，不只检查输入框。
+  return () => {
+    form.removeEventListener("submit", submit);
+    refresh.removeEventListener("click", onRefresh);
+    retry.removeEventListener("click", onRetry);
+    replace.removeEventListener("click", onReplace);
+    off.forEach((unsubscribe) => unsubscribe()); flow.dispose();
+    checkout.destroy(); // 所属采集面一并销毁，不再重复 destroy surface。
+  };
+}
+```
+
+#### 7.2.4 CheckoutForm.jsx：React 薄绑定
+
+useCheckout 提供稳定 checkout 对象和 ready、complete、loadError、fieldState。callback 引用更新不重建正在确认的 flow；Session identity 更新才替换整个上下文。
+
+父页面按当前模式重建入口，不能在重建后自动扣款：
+
+```jsx
+import { replaceCheckoutSession } from "./merchant-api.js";
+
+// 父页面已有 orderReference、uiMode、csrfToken 和 setSetup。
+async function onReplaceSession(oldSessionId) {
+  const next = await replaceCheckoutSession(oldSessionId, orderReference, uiMode, csrfToken);
+  setSetup(next); // 新 Session ID 触发 Provider 替换，不自动调用 confirm。
+}
+```
+
+
+```jsx
+import { useEffect, useRef, useState } from "react";
+import { useCheckout } from "@walletpay/react";
+import { createPaymentFlow } from "./checkout-flow.js";
+import { queryOrderStatus } from "./merchant-api.js";
+
+export function CheckoutForm({ sessionId, onReplaceSession, children }) {
+  const { checkout, ready, complete, loadError, fieldState } = useCheckout();
+  const flowRef = useRef(null);
+  const replaceRef = useRef(onReplaceSession);
+  const [state, setState] = useState({ message: "正在检查付款状态" });
+  useEffect(() => { replaceRef.current = onReplaceSession; }, [onReplaceSession]);
+  useEffect(() => {
+    const flow = createPaymentFlow({ checkout,
+      queryStatus: (signal) => queryOrderStatus(sessionId, signal),
+      onReplaceSession: () => replaceRef.current(sessionId),
+    });
+    flowRef.current = flow;
+    const off = flow.subscribe(setState);
+    void flow.refresh();
+    return () => { off(); flow.dispose(); flowRef.current = null; };
+  }, [checkout, sessionId]);
+  useEffect(() => {
+    flowRef.current?.setInput({ ready, complete, loadError });
+  }, [checkout, sessionId, ready, complete, loadError]);
+  const errors = Object.entries(fieldState ?? {})
+    .filter(([, value]) => value.errorCode)
+    .map(([name]) => `${name} 字段需要检查`);
+  return <form onSubmit={(event) => {
+    event.preventDefault(); void flowRef.current?.submit();
+  }}>
+    {children}
+    <p aria-live="polite">{errors.join("；")}</p>
+    <button type="submit" disabled={!state.canSubmit}>Pay</button>
+    <button type="button" disabled={!state.canRefresh}
+      onClick={() => void flowRef.current?.refresh()}>刷新结果</button>
+    <button type="button" disabled={!state.canRetrySame}
+      onClick={() => void flowRef.current?.retrySame()}>恢复原提交</button>
+    <button type="button" disabled={!state.canReplace}
+      onClick={() => void flowRef.current?.replaceSession()}>重新进入付款</button>
+    <p aria-live="polite">{state.message}</p>
+  </form>;
+}
+```
+
+### 7.3 恢复场景检查
+
+| 情况 | 预期 |
 | --- | --- |
-| 请款金额 (presentment_amount) | 向通道请款的金额。部分请款时是实际请款值 |
-| 入账金额 (booking_amount) | 请款金额按入账汇率换汇成结算币种后、扣费前的金额 |
-| 结算净额 (net_settlement_amount) | 入账金额减去 MDR、按笔费、滚动、固定后的金额。请款后进 `pending`，结算后才可提现 |
-| 主币种 (primary_currency) | 你的主币。按笔费和固定保证金按它标价 |
-| MDR | 按请款金额百分比计价的平台费率。退款按同一比例退回 |
-| 按笔费 (per_item_fee) | 网关费、3DS 等按笔收取的费用。退款不退 |
-| 滚动保证金 (rolling_reserve) | 入账金额 × 比例的保证金，按结算币种计 |
-| 退款请款金额 (refund_presentment_amount) | 退给买家的请款币种金额。累计不超过原请款金额 |
-| 退款入账金额 (refund_booking_amount) | 退款请款金额 × 退款汇率，从结算币种钱包扣减 |
+| 初次挂载时旧会话已有付款 | 查 Order 汇总，先等待／展示结果，不直接开放新扣款 |
+| 处理中，后来确定失败且可再付 | 刷新后恢复编辑与 Pay |
+| 提交后断网，查询暂显示 unpaid | 不解锁；原操作恢复或后端停止旧入口后查证 |
+| Session 过期 | 查证后出现重新进入付款动作，不永久锁住 |
+| 授权成功，请款失败 | 保留授权，不引导另付 |
+| 配置错误／组件加载失败 | 显示修复或刷新页面指引，不假装付款处理中 |
+| 页面卸载后旧请求返回 | 忽略旧 UI 响应，后台付款继续跟踪 |
 
-## 10. 延伸阅读（可选）
+## 8. 手工请款、取消和退款
 
-以下文档与本文相关。接入不需要读它们：
+这些操作只由你的后端使用服务端凭证发起，并携带持久幂等键。SDK 和 `client_secret` 无权执行。
 
-- [Payment Element 认证与接入内部设计说明](payment-element-auth-integration-design.md)（平台为什么这样设计）
-- [CONTEXT.md](../CONTEXT.md)（金额与费用术语的完整定义）
+| 操作 | 用途 | 注意 |
+| --- | --- | --- |
+| 请款 | 对已有授权确认收款 | 查询原交易，请款未知时不能另起付款 |
+| 取消授权 | 请款前撤销原授权 | 必须确认取消／失效，才可评估重新付款 |
+| Void | 在当前平台规则允许的阶段撤销请款 | 与取消授权不是同一动作 |
+| 退款 | 对符合条件的已收款交易退款 | 当前设计须已下游结算；累计不能超过原请款金额 |
+| 作废 Session | 停止该入口接受新付款 | 不取消已提交的授权或请款 |
+
+对应管理接口拟定为 `/v1/payments/{transactionId}` 下的操作。自动模式通常不需要你调用请款；手工模式的履约时点由你的业务政策决定。Void／退款后是否可对同一订单重新收款，需按正式平台规则处理，不自动开放。
+
+## 9. 上线前检查
+
+- 后端计算金额；买家／游客只能获取和查看自己的订单。
+- 创建会话有稳定的订单引用、版本与持久幂等键；过期重建使用新的创建代次。
+- 前端只拿公钥和自己的会话凭证；秘密不进 URL、日志或持久化浏览器存储。
+- Pay 提交期间禁用，结果未知时不提示再次扣款。
+- 返回页与原结账页都能通过后端查询恢复结果。
+- Webhook 先验签、再持久化、再应答；worker 能恢复并去重履约。
+- 验证重复点击、多标签、旧会话在途、跳转、关页、超时、会话过期和乱序事件。
+- 使用正式测试环境和合成测试支付信息；仓库 UI 原型不处理真实支付。
+
+## 10. 接口速查
+
+| 接口／SDK | 调用位置 | 凭证 |
+| --- | --- | --- |
+| `POST /v1/checkout-sessions` | 你的后端 | `sk_`／商户 OAuth |
+| `GET /v1/checkout-sessions/{id}` | 你的后端 | `sk_`／商户 OAuth |
+| `GET /v1/payments/{transactionId}` | 你的后端 | `sk_`／商户 OAuth |
+| `POST /v1/checkout-sessions/{id}/expire` | 你的后端 | `sk_`／商户 OAuth |
+| `loadWalletPay({ publicKey })` | 浏览器 | 公开商户标识 |
+| `createCheckout({ clientSecret })` | 浏览器 | 会话凭证 |
+| `createPaymentElement()`／`mount()`（B） | 浏览器 | SDK 使用会话配置 |
+| `createCardFields()`／`mount()`（C） | 浏览器 | SDK 使用会话配置 |
+| 打开 `checkout_url`（A） | 浏览器顶层跳转 | 短期托管启动引用；无需商户前端支付 SDK |
+| `checkout.confirm()` | 浏览器 | SDK 使用会话能力并管理续接 |
+| `checkout.retryConfirmation()` | 浏览器 | 只恢复原提交关联；不新建扣款 |
+| 你的订单结果接口 | 浏览器 → 你的后端 | 你的买家／游客会话 |
+| 你的 webhook 接收接口 | 平台 → 你的后端 | 独立 webhook 签名 |
+
+本指南重写自 wallet-architecture 的 [原商户指南](https://github.com/1aboveio/wallet-architecture/blob/main/docs/payment-element-merchant-integration-guide.md)，反映 2026-10-14 确认的接入流程。文中辅助函数由商户实现，正式 API 与 SDK 发布后应补充可运行示例。
+
+## 11. 3DS 官方参考
+
+本指南中的平台 SDK 封装是拟定设计，Worldpay 示例用于解释信息流，不增加你的接入步骤。核查日期：2026-10-14。
+
+- [W1：Access Worldpay 3DS Web challenge 与 verification](https://docs.worldpay.com/access/products/3ds/web/challenge-verification)
+- [W2：Access Worldpay Payments Integrated 3DS](https://docs.worldpay.com/access/products/payments/enable-features/3ds-authentication/integrated-3ds)
+
+## 12. 三种 UI 方案参考
+
+本平台三种方案共用支付内核，以上名称和契约均为拟定。行业参考包括 [Stripe Payment Element](https://docs.stripe.com/payments/payment-element)、[Stripe Checkout](https://docs.stripe.com/payments/checkout)、[Worldpay Checkout 安全字段](https://docs.worldpay.com/access/products/checkout/web/card-and-cvc)。
